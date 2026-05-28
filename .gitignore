@@ -16,6 +16,11 @@ firmware/build/
 .cproject
 .project
 
+# IDE - VS Code local files
+.vscode/ipch/
+.vscode/msvc.analysis.lastcodeanalysistime
+compile_commands.json
+
 # Python
 __pycache__/
 *.pyc
