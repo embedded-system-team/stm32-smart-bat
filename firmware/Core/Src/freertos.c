@@ -19,6 +19,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
+#include "cmsis_os2.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
@@ -34,7 +35,17 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct {
+  uint32_t timestamp_ms;
 
+  int32_t ax;
+  int32_t ay;
+  int32_t az;
+
+  int32_t gx;
+  int32_t gy;
+  int32_t gz;
+} IMUSample_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -50,12 +61,27 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 static LSM6DSL_Object_t imu;
-
+static uint32_t dropped_samples = 0;
+static osMessageQueueId_t imuQueueHandle;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for sensorTask */
+osThreadId_t sensorTaskHandle;
+const osThreadAttr_t sensorTask_attributes = {
+  .name = "sensorTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityHigh,
+};
+/* Definitions for commTask */
+osThreadId_t commTaskHandle;
+const osThreadAttr_t commTask_attributes = {
+  .name = "commTask",
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -69,6 +95,8 @@ static int32_t ImuInit(void);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void StartSensorTask(void *argument);
+void StartCommTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -102,8 +130,19 @@ void MX_FREERTOS_Init(void) {
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
+  /* creation of sensorTask */
+  sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
+
+  /* creation of commTask */
+  commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  imuQueueHandle = osMessageQueueNew(32, sizeof(IMUSample_t), NULL);
+  if (imuQueueHandle == NULL)
+  {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -122,38 +161,98 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  for (;;) {
+    osDelay(1000);
+  }
+  /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_StartSensorTask */
+/**
+* @brief Function implementing the sensorTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSensorTask */
+void StartSensorTask(void *argument)
+{
+  IMUSample_t sample;
   LSM6DSL_Axes_t acc;
   LSM6DSL_Axes_t gyro;
-  char msg[160];
 
   if (ImuInit() != LSM6DSL_OK)
   {
     UartPrint("LSM6DSL init failed\r\n");
+
+    for (;;)
+    {
+      osDelay(1000);
+    }
   }
-  else
-  {
-    UartPrint("LSM6DSL ready\r\n");
-  }
+
+  UartPrint("LSM6DSL ready\r\n");
 
   for (;;)
   {
     if ((LSM6DSL_ACC_GetAxes(&imu, &acc) == LSM6DSL_OK) &&
         (LSM6DSL_GYRO_GetAxes(&imu, &gyro) == LSM6DSL_OK))
     {
-      snprintf(msg, sizeof(msg),
-               "ACC[mg] X:%ld Y:%ld Z:%ld | GYRO[mdps] X:%ld Y:%ld Z:%ld\r\n",
-               (long)acc.x, (long)acc.y, (long)acc.z,
-               (long)gyro.x, (long)gyro.y, (long)gyro.z);
-      UartPrint(msg);
-    }
-    else
-    {
-      UartPrint("LSM6DSL read failed\r\n");
+      sample.timestamp_ms = HAL_GetTick();
+
+      sample.ax = acc.x;
+      sample.ay = acc.y;
+      sample.az = acc.z;
+
+      sample.gx = gyro.x;
+      sample.gy = gyro.y;
+      sample.gz = gyro.z;
+
+      if (osMessageQueuePut(imuQueueHandle, &sample, 0U, 0U) != osOK)
+      {
+        dropped_samples++;
+      }
     }
 
-    osDelay(20);
+    osDelay(10);
   }
-  /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_StartCommTask */
+/**
+* @brief Function implementing the commTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCommTask */
+void StartCommTask(void *argument)
+{
+  IMUSample_t sample;
+  char msg[160];
+
+  for (;;)
+  {
+    if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
+    {
+      int len = snprintf(
+          msg,
+          sizeof(msg),
+          "%lu,%ld,%ld,%ld,%ld,%ld,%ld,%lu\r\n",
+          (unsigned long)sample.timestamp_ms,
+          (long)sample.ax,
+          (long)sample.ay,
+          (long)sample.az,
+          (long)sample.gx,
+          (long)sample.gy,
+          (long)sample.gz,
+          (unsigned long)dropped_samples
+      );
+
+      if (len > 0)
+      {
+        HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
+      }
+    }
+  }
 }
 
 /* Private application code --------------------------------------------------*/
