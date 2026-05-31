@@ -49,7 +49,12 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define IMU_ODR_HZ                       104.0f
+#define IMU_ACCEL_FULL_SCALE_G           4
+#define IMU_GYRO_FULL_SCALE_DPS          500
+#define IMU_SENSOR_SETTLE_DELAY_MS       100U
+#define IMU_SAMPLE_PERIOD_MS             10U
+#define IMU_GYRO_CALIBRATION_SAMPLES     500U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -217,6 +222,7 @@ void StartSensorTask(void *argument)
   }
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "LSM6DSL ready");
+  osDelay(IMU_SENSOR_SETTLE_DELAY_MS);
 
   if (ImuCalibrateGyroBias() != LSM6DSL_OK)
   {
@@ -264,7 +270,7 @@ void StartSensorTask(void *argument)
       }
     }
 
-    osDelay(10);
+    osDelay(IMU_SAMPLE_PERIOD_MS);
   }
   /* USER CODE END StartSensorTask */
 }
@@ -289,7 +295,7 @@ void StartCommTask(void *argument)
     {
       Debug_Log(DEBUG_LEVEL_DEBUG,
                 DEBUG_CLASS_COMM,
-                "imu t=%lu acc=%ld,%ld,%ld gyro=%ld,%ld,%ld dropped=%lu",
+                "imu t=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld dropped=%lu",
                 (unsigned long)sample.timestamp_ms,
                 (long)sample.ax,
                 (long)sample.ay,
@@ -336,10 +342,10 @@ static int32_t ImuInit(void)
         (LSM6DSL_ReadID(&imu, &id) == LSM6DSL_OK) &&
         (id == LSM6DSL_ID) &&
         (LSM6DSL_Init(&imu) == LSM6DSL_OK) &&
-        (LSM6DSL_ACC_SetOutputDataRate(&imu, 104.0f) == LSM6DSL_OK) &&
-        (LSM6DSL_ACC_SetFullScale(&imu, 4) == LSM6DSL_OK) &&
-        (LSM6DSL_GYRO_SetOutputDataRate(&imu,104.0f) == LSM6DSL_OK) &&
-        (LSM6DSL_GYRO_SetFullScale(&imu, 500) == LSM6DSL_OK) &&
+        (LSM6DSL_ACC_SetOutputDataRate(&imu, IMU_ODR_HZ) == LSM6DSL_OK) &&
+        (LSM6DSL_ACC_SetFullScale(&imu, IMU_ACCEL_FULL_SCALE_G) == LSM6DSL_OK) &&
+        (LSM6DSL_GYRO_SetOutputDataRate(&imu, IMU_ODR_HZ) == LSM6DSL_OK) &&
+        (LSM6DSL_GYRO_SetFullScale(&imu, IMU_GYRO_FULL_SCALE_DPS) == LSM6DSL_OK) &&
         (LSM6DSL_ACC_Enable(&imu) == LSM6DSL_OK) &&
         (LSM6DSL_GYRO_Enable(&imu) == LSM6DSL_OK))
     {
@@ -352,13 +358,16 @@ static int32_t ImuInit(void)
 
 static int32_t ImuCalibrateGyroBias(void)
 {
-  const uint32_t sample_count = 100;
+  const uint32_t sample_count = IMU_GYRO_CALIBRATION_SAMPLES;
   int64_t sum_x = 0;
   int64_t sum_y = 0;
   int64_t sum_z = 0;
   LSM6DSL_Axes_t gyro;
 
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "Gyro calibration start. Keep board still...");
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_IMU,
+            "Gyro calibration start (%lu samples). Keep board still...",
+            (unsigned long)sample_count);
 
   for (uint32_t i = 0; i < sample_count; i++)
   {
@@ -371,7 +380,7 @@ static int32_t ImuCalibrateGyroBias(void)
     sum_y += gyro.y;
     sum_z += gyro.z;
 
-    osDelay(10);
+    osDelay(IMU_SAMPLE_PERIOD_MS);
   }
 
   gyro_bias_x = (int32_t)(sum_x / (int64_t)sample_count);
