@@ -105,6 +105,7 @@ static void ImuDelay(uint32_t ms);
 static int32_t ImuInit(void);
 
 static int32_t ImuCalibrateGyroBias(void);
+static void FormatInt64(char *buffer, size_t buffer_size, int64_t value);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -310,18 +311,35 @@ void StartCommTask(void *argument)
   {
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
     {
+      int64_t acc_mag2 =
+          (int64_t)sample.ax * sample.ax +
+          (int64_t)sample.ay * sample.ay +
+          (int64_t)sample.az * sample.az;
+
+      int64_t gyro_mag2 =
+          (int64_t)sample.gx * sample.gx +
+          (int64_t)sample.gy * sample.gy +
+          (int64_t)sample.gz * sample.gz;
+      char acc_mag2_text[24];
+      char gyro_mag2_text[24];
+
+      FormatInt64(acc_mag2_text, sizeof(acc_mag2_text), acc_mag2);
+      FormatInt64(gyro_mag2_text, sizeof(gyro_mag2_text), gyro_mag2);
+
       Debug_Log(DEBUG_LEVEL_DEBUG,
-          DEBUG_CLASS_COMM,
-          "imu t=%lu dt=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld dropped=%lu",
-          (unsigned long)sample.timestamp_ms,
-          (unsigned long)sample.dt_ms,
-          (long)sample.ax,
-          (long)sample.ay,
-          (long)sample.az,
-          (long)sample.gx,
-          (long)sample.gy,
-          (long)sample.gz,
-          (unsigned long)dropped_samples);
+                DEBUG_CLASS_COMM,
+                "imu t=%lu dt=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld amag2=%s gmag2=%s dropped=%lu",
+                (unsigned long)sample.timestamp_ms,
+                (unsigned long)sample.dt_ms,
+                (long)sample.ax,
+                (long)sample.ay,
+                (long)sample.az,
+                (long)sample.gx,
+                (long)sample.gy,
+                (long)sample.gz,
+                acc_mag2_text,
+                gyro_mag2_text,
+                (unsigned long)dropped_samples);
     }
   }
   /* USER CODE END StartCommTask */
@@ -332,6 +350,48 @@ void StartCommTask(void *argument)
 static void ImuDelay(uint32_t ms)
 {
   osDelay(ms);
+}
+
+static void FormatInt64(char *buffer, size_t buffer_size, int64_t value)
+{
+  char reversed[21];
+  uint64_t magnitude;
+  size_t len = 0U;
+  size_t out = 0U;
+
+  if (buffer_size == 0U)
+  {
+    return;
+  }
+  buffer[0] = '\0';
+
+  if (buffer_size == 1U)
+  {
+    return;
+  }
+
+  if (value < 0)
+  {
+    magnitude = (uint64_t)(-(value + 1)) + 1U;
+    buffer[out++] = '-';
+  }
+  else
+  {
+    magnitude = (uint64_t)value;
+  }
+
+  do
+  {
+    reversed[len++] = (char)('0' + (magnitude % 10U));
+    magnitude /= 10U;
+  } while ((magnitude > 0U) && (len < sizeof(reversed)));
+
+  while ((len > 0U) && (out < (buffer_size - 1U)))
+  {
+    buffer[out++] = reversed[--len];
+  }
+
+  buffer[out] = '\0';
 }
 
 static int32_t ImuInit(void)
