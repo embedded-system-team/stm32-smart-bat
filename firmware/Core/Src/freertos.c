@@ -61,8 +61,13 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 static LSM6DSL_Object_t imu;
+
 static uint32_t dropped_samples = 0;
 static osMessageQueueId_t imuQueueHandle;
+
+static int32_t gyro_bias_x = 0;
+static int32_t gyro_bias_y = 0;
+static int32_t gyro_bias_z = 0;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -92,6 +97,7 @@ static void ImuDelay(uint32_t ms);
 static void UartPrint(const char *msg);
 static int32_t ImuInit(void);
 
+static int32_t ImuCalibrateGyroBias(void);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -192,6 +198,16 @@ void StartSensorTask(void *argument)
 
   UartPrint("LSM6DSL ready\r\n");
 
+  if (ImuCalibrateGyroBias() != LSM6DSL_OK)
+{
+  UartPrint("Gyro calibration failed\r\n");
+
+  for (;;)
+  {
+    osDelay(1000);
+  }
+}
+
   for (;;)
   {
     if ((LSM6DSL_ACC_GetAxes(&imu, &acc) == LSM6DSL_OK) &&
@@ -203,9 +219,9 @@ void StartSensorTask(void *argument)
       sample.ay = acc.y;
       sample.az = acc.z;
 
-      sample.gx = gyro.x;
-      sample.gy = gyro.y;
-      sample.gz = gyro.z;
+      sample.gx = gyro.x - gyro_bias_x;
+      sample.gy = gyro.y - gyro_bias_y;
+      sample.gz = gyro.z - gyro_bias_z;
 
       if (osMessageQueuePut(imuQueueHandle, &sample, 0U, 0U) != osOK)
       {
@@ -305,6 +321,45 @@ static int32_t ImuInit(void)
   }
 
   return LSM6DSL_ERROR;
+}
+
+static int32_t ImuCalibrateGyroBias(void)
+{
+  const uint32_t sample_count = 100;
+  int64_t sum_x = 0;
+  int64_t sum_y = 0;
+  int64_t sum_z = 0;
+  LSM6DSL_Axes_t gyro;
+
+  UartPrint("Gyro calibration start. Keep board still...\r\n");
+
+  for (uint32_t i = 0; i < sample_count; i++)
+  {
+    if (LSM6DSL_GYRO_GetAxes(&imu, &gyro) != LSM6DSL_OK)
+    {
+      return LSM6DSL_ERROR;
+    }
+
+    sum_x += gyro.x;
+    sum_y += gyro.y;
+    sum_z += gyro.z;
+
+    osDelay(10);
+  }
+
+  gyro_bias_x = (int32_t)(sum_x / (int64_t)sample_count);
+  gyro_bias_y = (int32_t)(sum_y / (int64_t)sample_count);
+  gyro_bias_z = (int32_t)(sum_z / (int64_t)sample_count);
+
+  char msg[128];
+  snprintf(msg, sizeof(msg),
+           "Gyro bias: %ld,%ld,%ld\r\n",
+           (long)gyro_bias_x,
+           (long)gyro_bias_y,
+           (long)gyro_bias_z);
+  UartPrint(msg);
+
+  return LSM6DSL_OK;
 }
 
 /* USER CODE END Application */
