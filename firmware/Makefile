@@ -43,6 +43,7 @@ Core/Src/quadspi.c \
 Core/Src/spi.c \
 Core/Src/usart.c \
 Core/Src/usb_otg.c \
+Core/Src/debug_log.c \
 Core/Src/stm32l4xx_it.c \
 Core/Src/stm32l4xx_hal_msp.c \
 Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_dfsdm.c \
