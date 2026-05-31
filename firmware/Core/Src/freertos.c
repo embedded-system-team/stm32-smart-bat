@@ -37,6 +37,7 @@
 /* USER CODE BEGIN PTD */
 typedef struct {
   uint32_t timestamp_ms;
+  uint32_t dt_ms;
 
   int32_t ax;
   int32_t ay;
@@ -210,6 +211,8 @@ void StartSensorTask(void *argument)
   LSM6DSL_Axes_t acc;
   LSM6DSL_Axes_t gyro;
 
+  uint32_t last_sample_tick = 0U;
+
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "Sensor task start");
 
   if (ImuInit() != LSM6DSL_OK)
@@ -242,7 +245,20 @@ void StartSensorTask(void *argument)
 
     if ((acc_status == LSM6DSL_OK) && (gyro_status == LSM6DSL_OK))
     {
-      sample.timestamp_ms = HAL_GetTick();
+      uint32_t now = HAL_GetTick();
+
+      sample.timestamp_ms = now;
+
+      if (last_sample_tick == 0U)
+      {
+        sample.dt_ms = 0U;
+      }
+      else
+      {
+        sample.dt_ms = now - last_sample_tick;
+      }
+
+      last_sample_tick = now;
 
       sample.ax = acc.x;
       sample.ay = acc.y;
@@ -295,16 +311,17 @@ void StartCommTask(void *argument)
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
     {
       Debug_Log(DEBUG_LEVEL_DEBUG,
-                DEBUG_CLASS_COMM,
-                "imu t=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld dropped=%lu",
-                (unsigned long)sample.timestamp_ms,
-                (long)sample.ax,
-                (long)sample.ay,
-                (long)sample.az,
-                (long)sample.gx,
-                (long)sample.gy,
-                (long)sample.gz,
-                (unsigned long)dropped_samples);
+          DEBUG_CLASS_COMM,
+          "imu t=%lu dt=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld dropped=%lu",
+          (unsigned long)sample.timestamp_ms,
+          (unsigned long)sample.dt_ms,
+          (long)sample.ax,
+          (long)sample.ay,
+          (long)sample.az,
+          (long)sample.gx,
+          (long)sample.gy,
+          (long)sample.gz,
+          (unsigned long)dropped_samples);
     }
   }
   /* USER CODE END StartCommTask */
