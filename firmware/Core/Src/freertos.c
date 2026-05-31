@@ -57,6 +57,10 @@ typedef struct {
 #define IMU_SENSOR_SETTLE_DELAY_MS       100U
 #define IMU_SAMPLE_PERIOD_MS             10U
 #define IMU_GYRO_CALIBRATION_SAMPLES     500U
+
+#define SWING_GYRO_THRESHOLD_MDPS        100000LL
+#define SWING_GYRO_THRESHOLD2            \
+  (SWING_GYRO_THRESHOLD_MDPS * SWING_GYRO_THRESHOLD_MDPS)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -305,6 +309,9 @@ void StartCommTask(void *argument)
   /* USER CODE BEGIN StartCommTask */
   IMUSample_t sample;
 
+  uint8_t swing_active = 0U;
+  uint32_t swing_start_time = 0U;
+
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
   for (;;)
@@ -322,6 +329,28 @@ void StartCommTask(void *argument)
           (int64_t)sample.gz * sample.gz;
       char acc_mag2_text[24];
       char gyro_mag2_text[24];
+
+      if ((swing_active == 0U) && (gyro_mag2 > SWING_GYRO_THRESHOLD2))
+      {
+        swing_active = 1U;
+        swing_start_time = sample.timestamp_ms;
+
+        Debug_Log(DEBUG_LEVEL_INFO,
+                  DEBUG_CLASS_COMM,
+                  "SWING_START t=%lu",
+                  (unsigned long)swing_start_time);
+      }
+
+      if ((swing_active == 1U) && (gyro_mag2 < SWING_GYRO_THRESHOLD2))
+      {
+        swing_active = 0U;
+
+        Debug_Log(DEBUG_LEVEL_INFO,
+                  DEBUG_CLASS_COMM,
+                  "SWING_END t=%lu duration=%lu",
+                  (unsigned long)sample.timestamp_ms,
+                  (unsigned long)(sample.timestamp_ms - swing_start_time));
+      }
 
       FormatInt64(acc_mag2_text, sizeof(acc_mag2_text), acc_mag2);
       FormatInt64(gyro_mag2_text, sizeof(gyro_mag2_text), gyro_mag2);
