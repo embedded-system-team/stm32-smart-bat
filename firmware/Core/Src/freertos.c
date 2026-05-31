@@ -27,10 +27,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "b_l475e_iot01a1_bus.h"
+#include "debug_log.h"
 #include "lsm6dsl.h"
 #include "usart.h"
 #include <stdio.h>
-#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,6 +68,8 @@ static osMessageQueueId_t imuQueueHandle;
 static int32_t gyro_bias_x = 0;
 static int32_t gyro_bias_y = 0;
 static int32_t gyro_bias_z = 0;
+
+static uint32_t imu_read_failures = 0;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -94,7 +96,6 @@ const osThreadAttr_t commTask_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 static void ImuDelay(uint32_t ms);
-static void UartPrint(const char *msg);
 static int32_t ImuInit(void);
 
 static int32_t ImuCalibrateGyroBias(void);
@@ -113,7 +114,8 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-
+  DebugLog_Init(&huart1);
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_SYSTEM, "FreeRTOS init");
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -130,25 +132,41 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  imuQueueHandle = osMessageQueueNew(32, sizeof(IMUSample_t), NULL);
+  if (imuQueueHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "imuQueue create failed");
+    Error_Handler();
+  }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  if (defaultTaskHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "defaultTask create failed");
+    Error_Handler();
+  }
 
   /* creation of sensorTask */
   sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
+  if (sensorTaskHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "sensorTask create failed");
+    Error_Handler();
+  }
 
   /* creation of commTask */
   commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
+  if (commTaskHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "commTask create failed");
+    Error_Handler();
+  }
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  imuQueueHandle = osMessageQueueNew(32, sizeof(IMUSample_t), NULL);
-  if (imuQueueHandle == NULL)
-  {
-    Error_Handler();
-  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -186,9 +204,11 @@ void StartSensorTask(void *argument)
   LSM6DSL_Axes_t acc;
   LSM6DSL_Axes_t gyro;
 
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "Sensor task start");
+
   if (ImuInit() != LSM6DSL_OK)
   {
-    UartPrint("LSM6DSL init failed\r\n");
+    Debug_Log(DEBUG_LEVEL_ERROR, DEBUG_CLASS_IMU, "LSM6DSL init failed");
 
     for (;;)
     {
@@ -196,22 +216,24 @@ void StartSensorTask(void *argument)
     }
   }
 
-  UartPrint("LSM6DSL ready\r\n");
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "LSM6DSL ready");
 
   if (ImuCalibrateGyroBias() != LSM6DSL_OK)
-{
-  UartPrint("Gyro calibration failed\r\n");
-
-  for (;;)
   {
-    osDelay(1000);
+    Debug_Log(DEBUG_LEVEL_ERROR, DEBUG_CLASS_IMU, "Gyro calibration failed");
+
+    for (;;)
+    {
+      osDelay(1000);
+    }
   }
-}
 
   for (;;)
   {
-    if ((LSM6DSL_ACC_GetAxes(&imu, &acc) == LSM6DSL_OK) &&
-        (LSM6DSL_GYRO_GetAxes(&imu, &gyro) == LSM6DSL_OK))
+    int32_t acc_status = LSM6DSL_ACC_GetAxes(&imu, &acc);
+    int32_t gyro_status = LSM6DSL_GYRO_GetAxes(&imu, &gyro);
+
+    if ((acc_status == LSM6DSL_OK) && (gyro_status == LSM6DSL_OK))
     {
       sample.timestamp_ms = HAL_GetTick();
 
@@ -226,6 +248,19 @@ void StartSensorTask(void *argument)
       if (osMessageQueuePut(imuQueueHandle, &sample, 0U, 0U) != osOK)
       {
         dropped_samples++;
+      }
+    }
+    else
+    {
+      imu_read_failures++;
+      if ((imu_read_failures % 100U) == 1U)
+      {
+        Debug_Log(DEBUG_LEVEL_WARN,
+                  DEBUG_CLASS_IMU,
+                  "IMU read failed acc=%ld gyro=%ld count=%lu",
+                  (long)acc_status,
+                  (long)gyro_status,
+                  (unsigned long)imu_read_failures);
       }
     }
 
@@ -243,30 +278,24 @@ void StartSensorTask(void *argument)
 void StartCommTask(void *argument)
 {
   IMUSample_t sample;
-  char msg[160];
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
   for (;;)
   {
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
     {
-      int len = snprintf(
-          msg,
-          sizeof(msg),
-          "%lu,%ld,%ld,%ld,%ld,%ld,%ld,%lu\r\n",
-          (unsigned long)sample.timestamp_ms,
-          (long)sample.ax,
-          (long)sample.ay,
-          (long)sample.az,
-          (long)sample.gx,
-          (long)sample.gy,
-          (long)sample.gz,
-          (unsigned long)dropped_samples
-      );
-
-      if (len > 0)
-      {
-        HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
-      }
+      Debug_Log(DEBUG_LEVEL_DEBUG,
+                DEBUG_CLASS_COMM,
+                "imu t=%lu acc=%ld,%ld,%ld gyro=%ld,%ld,%ld dropped=%lu",
+                (unsigned long)sample.timestamp_ms,
+                (long)sample.ax,
+                (long)sample.ay,
+                (long)sample.az,
+                (long)sample.gx,
+                (long)sample.gy,
+                (long)sample.gz,
+                (unsigned long)dropped_samples);
     }
   }
 }
@@ -276,11 +305,6 @@ void StartCommTask(void *argument)
 static void ImuDelay(uint32_t ms)
 {
   osDelay(ms);
-}
-
-static void UartPrint(const char *msg)
-{
-  HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 }
 
 static int32_t ImuInit(void)
@@ -331,7 +355,7 @@ static int32_t ImuCalibrateGyroBias(void)
   int64_t sum_z = 0;
   LSM6DSL_Axes_t gyro;
 
-  UartPrint("Gyro calibration start. Keep board still...\r\n");
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_IMU, "Gyro calibration start. Keep board still...");
 
   for (uint32_t i = 0; i < sample_count; i++)
   {
@@ -351,13 +375,12 @@ static int32_t ImuCalibrateGyroBias(void)
   gyro_bias_y = (int32_t)(sum_y / (int64_t)sample_count);
   gyro_bias_z = (int32_t)(sum_z / (int64_t)sample_count);
 
-  char msg[128];
-  snprintf(msg, sizeof(msg),
-           "Gyro bias: %ld,%ld,%ld\r\n",
-           (long)gyro_bias_x,
-           (long)gyro_bias_y,
-           (long)gyro_bias_z);
-  UartPrint(msg);
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_IMU,
+            "Gyro bias: %ld,%ld,%ld",
+            (long)gyro_bias_x,
+            (long)gyro_bias_y,
+            (long)gyro_bias_z);
 
   return LSM6DSL_OK;
 }
