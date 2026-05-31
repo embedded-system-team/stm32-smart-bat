@@ -30,6 +30,7 @@
 #include "lsm6dsl.h"
 #include "usart.h"
 #include <stdio.h>
+#include "cmsis_os2.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -359,6 +360,7 @@ static int32_t ImuInit(void)
 static int32_t ImuCalibrateGyroBias(void)
 {
   const uint32_t sample_count = IMU_GYRO_CALIBRATION_SAMPLES;
+
   int64_t sum_x = 0;
   int64_t sum_y = 0;
   int64_t sum_z = 0;
@@ -368,6 +370,9 @@ static int32_t ImuCalibrateGyroBias(void)
             DEBUG_CLASS_IMU,
             "Gyro calibration start (%lu samples). Keep board still...",
             (unsigned long)sample_count);
+
+  // Wait for gyro to become stable
+  osDelay(1000);
 
   for (uint32_t i = 0; i < sample_count; i++)
   {
