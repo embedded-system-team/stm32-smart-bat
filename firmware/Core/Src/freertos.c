@@ -19,7 +19,6 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
-#include "cmsis_os2.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
@@ -143,30 +142,30 @@ void MX_FREERTOS_Init(void) {
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of sensorTask */
+  sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
+
+  /* creation of commTask */
+  commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
   if (defaultTaskHandle == NULL)
   {
     Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "defaultTask create failed");
     Error_Handler();
   }
-
-  /* creation of sensorTask */
-  sensorTaskHandle = osThreadNew(StartSensorTask, NULL, &sensorTask_attributes);
   if (sensorTaskHandle == NULL)
   {
     Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "sensorTask create failed");
     Error_Handler();
   }
-
-  /* creation of commTask */
-  commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
   if (commTaskHandle == NULL)
   {
     Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "commTask create failed");
     Error_Handler();
   }
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -200,6 +199,7 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_StartSensorTask */
 void StartSensorTask(void *argument)
 {
+  /* USER CODE BEGIN StartSensorTask */
   IMUSample_t sample;
   LSM6DSL_Axes_t acc;
   LSM6DSL_Axes_t gyro;
@@ -266,6 +266,7 @@ void StartSensorTask(void *argument)
 
     osDelay(10);
   }
+  /* USER CODE END StartSensorTask */
 }
 
 /* USER CODE BEGIN Header_StartCommTask */
@@ -277,6 +278,7 @@ void StartSensorTask(void *argument)
 /* USER CODE END Header_StartCommTask */
 void StartCommTask(void *argument)
 {
+  /* USER CODE BEGIN StartCommTask */
   IMUSample_t sample;
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
@@ -298,6 +300,7 @@ void StartCommTask(void *argument)
                 (unsigned long)dropped_samples);
     }
   }
+  /* USER CODE END StartCommTask */
 }
 
 /* Private application code --------------------------------------------------*/
