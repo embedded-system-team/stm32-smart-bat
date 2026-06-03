@@ -61,6 +61,8 @@ typedef struct {
 #define SWING_GYRO_THRESHOLD_MDPS        100000LL
 #define SWING_GYRO_THRESHOLD2            \
   (SWING_GYRO_THRESHOLD_MDPS * SWING_GYRO_THRESHOLD_MDPS)
+
+#define ENABLE_IMU_RAW_LOG               0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -327,8 +329,6 @@ void StartCommTask(void *argument)
           (int64_t)sample.gx * sample.gx +
           (int64_t)sample.gy * sample.gy +
           (int64_t)sample.gz * sample.gz;
-      char acc_mag2_text[24];
-      char gyro_mag2_text[24];
 
       if ((swing_active == 0U) && (gyro_mag2 > SWING_GYRO_THRESHOLD2))
       {
@@ -352,6 +352,10 @@ void StartCommTask(void *argument)
                   (unsigned long)(sample.timestamp_ms - swing_start_time));
       }
 
+#if ENABLE_IMU_RAW_LOG
+      char acc_mag2_text[24];
+      char gyro_mag2_text[24];
+
       FormatInt64(acc_mag2_text, sizeof(acc_mag2_text), acc_mag2);
       FormatInt64(gyro_mag2_text, sizeof(gyro_mag2_text), gyro_mag2);
 
@@ -369,6 +373,7 @@ void StartCommTask(void *argument)
                 acc_mag2_text,
                 gyro_mag2_text,
                 (unsigned long)dropped_samples);
+#endif
     }
   }
   /* USER CODE END StartCommTask */
