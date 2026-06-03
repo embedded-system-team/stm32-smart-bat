@@ -27,6 +27,20 @@
                 "firmware",
                 "clean"
             ]
+        },
+        {
+        "label": "Flash Firmware",
+        "type": "shell",
+        "command": "openocd",
+        "args": [
+            "-f",
+            "interface/stlink.cfg",
+            "-f",
+            "target/stm32l4x.cfg",
+            "-c",
+            "program firmware/build/firmware.elf verify reset exit"
+        ],
+        "dependsOn": "Build Firmware"
         }
     ]
 }
