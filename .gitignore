@@ -33,7 +33,6 @@ data/*.log
 
 # OS/editor
 .DS_Store
-.vscode/
 
 # Backup and temporary files
 *.bak
