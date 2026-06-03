@@ -52,8 +52,8 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define IMU_ODR_HZ                       104.0f
-#define IMU_ACCEL_FULL_SCALE_G           4
-#define IMU_GYRO_FULL_SCALE_DPS          500
+#define IMU_ACCEL_FULL_SCALE_G           16
+#define IMU_GYRO_FULL_SCALE_DPS          2000
 #define IMU_SENSOR_SETTLE_DELAY_MS       100U
 #define IMU_SAMPLE_PERIOD_MS             10U
 #define IMU_GYRO_CALIBRATION_SAMPLES     500U
