@@ -20,6 +20,7 @@ firmware/build/
 .vscode/ipch/
 .vscode/msvc.analysis.lastcodeanalysistime
 .vscode/settings.json
+smart-bat.code-workspace
 compile_commands.json
 
 # Python
