@@ -16,6 +16,13 @@ firmware/build/
 .cproject
 .project
 
+# IDE - VS Code local files
+.vscode/ipch/
+.vscode/msvc.analysis.lastcodeanalysistime
+.vscode/settings.json
+smart-bat.code-workspace
+compile_commands.json
+
 # Python
 __pycache__/
 *.pyc
@@ -28,7 +35,6 @@ data/*.log
 
 # OS/editor
 .DS_Store
-.vscode/
 
 # Backup and temporary files
 *.bak

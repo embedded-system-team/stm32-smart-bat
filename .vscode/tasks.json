@@ -1,0 +1,46 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Firmware",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "-C",
+                "firmware",
+                "-j"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "Clean Firmware",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "-C",
+                "firmware",
+                "clean"
+            ]
+        },
+        {
+        "label": "Flash Firmware",
+        "type": "shell",
+        "command": "openocd",
+        "args": [
+            "-f",
+            "interface/stlink.cfg",
+            "-f",
+            "target/stm32l4x.cfg",
+            "-c",
+            "program firmware/build/firmware.elf verify reset exit"
+        ],
+        "dependsOn": "Build Firmware"
+        }
+    ]
+}
