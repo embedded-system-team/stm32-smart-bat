@@ -457,18 +457,29 @@ void StartCommTask(void *argument)
               uint32_t estimated_speed_m_s_x100 =
                 estimated_speed_mm_s / 10U;
 
+              // Debug_Log(DEBUG_LEVEL_INFO,
+              //           DEBUG_CLASS_COMM,
+              //           "SWING_END t=%lu duration=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
+              //           (unsigned long)swing_end_time,
+              //           (unsigned long)duration,
+              //           (unsigned long)swing_peak_time,
+              //           (unsigned long)peak_dps,
+              //           (unsigned long)estimated_speed_m_s_x100,
+              //           (long)peak_gx_mdps,
+              //           (long)peak_gy_mdps,
+              //           (long)peak_gz_mdps,
+              //           peak_gmag2_text,
+              //           (unsigned long)dropped_samples);
+
+              // Short Log
               Debug_Log(DEBUG_LEVEL_INFO,
                         DEBUG_CLASS_COMM,
-                        "SWING_END t=%lu duration=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
+                        "SWING_END t=%lu dur=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
                         (unsigned long)swing_end_time,
                         (unsigned long)duration,
                         (unsigned long)swing_peak_time,
                         (unsigned long)peak_dps,
                         (unsigned long)estimated_speed_m_s_x100,
-                        (long)peak_gx_mdps,
-                        (long)peak_gy_mdps,
-                        (long)peak_gz_mdps,
-                        peak_gmag2_text,
                         (unsigned long)dropped_samples);
             }
             else
