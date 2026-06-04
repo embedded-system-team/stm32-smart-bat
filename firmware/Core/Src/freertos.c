@@ -58,11 +58,25 @@ typedef struct {
 #define IMU_SAMPLE_PERIOD_MS             10U
 #define IMU_GYRO_CALIBRATION_SAMPLES     500U
 
-#define SWING_GYRO_THRESHOLD_MDPS        100000LL
-#define SWING_GYRO_THRESHOLD2            \
-  (SWING_GYRO_THRESHOLD_MDPS * SWING_GYRO_THRESHOLD_MDPS)
-
 #define ENABLE_IMU_RAW_LOG               0
+
+#define SWING_START_THRESHOLD_MDPS      400000LL
+#define SWING_END_THRESHOLD_MDPS        120000LL
+
+#define SWING_START_THRESHOLD2 \
+  (SWING_START_THRESHOLD_MDPS * SWING_START_THRESHOLD_MDPS)
+
+#define SWING_END_THRESHOLD2 \
+  (SWING_END_THRESHOLD_MDPS * SWING_END_THRESHOLD_MDPS)
+
+#define SWING_START_ACC_THRESHOLD_MG    1800LL
+#define SWING_START_ACC_THRESHOLD2 \
+  (SWING_START_ACC_THRESHOLD_MG * SWING_START_ACC_THRESHOLD_MG)
+
+#define SWING_MIN_DURATION_MS           180U
+#define SWING_COOLDOWN_MS              1200U
+
+#define SWING_CONFIRM_MS                48U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -311,8 +325,27 @@ void StartCommTask(void *argument)
   /* USER CODE BEGIN StartCommTask */
   IMUSample_t sample;
 
-  uint8_t swing_active = 0U;
+  typedef enum {
+    SWING_STATE_IDLE = 0,
+    SWING_STATE_CANDIDATE,
+    SWING_STATE_SWINGING,
+    SWING_STATE_COOLDOWN
+  } SwingState_t;
+
+  SwingState_t swing_state = SWING_STATE_IDLE;
+
   uint32_t swing_start_time = 0U;
+  uint32_t swing_end_time = 0U;
+  uint32_t cooldown_start_time = 0U;
+  uint32_t swing_peak_time = 0U;
+
+  int64_t swing_peak_gmag2 = 0;
+
+  int32_t peak_gx_mdps = 0;
+  int32_t peak_gy_mdps = 0;
+  int32_t peak_gz_mdps = 0;
+
+  uint32_t candidate_start_time = 0U;
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
@@ -321,58 +354,156 @@ void StartCommTask(void *argument)
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
     {
       int64_t acc_mag2 =
-          (int64_t)sample.ax * sample.ax +
-          (int64_t)sample.ay * sample.ay +
-          (int64_t)sample.az * sample.az;
+          (int64_t)sample.ax * (int64_t)sample.ax +
+          (int64_t)sample.ay * (int64_t)sample.ay +
+          (int64_t)sample.az * (int64_t)sample.az;
 
       int64_t gyro_mag2 =
-          (int64_t)sample.gx * sample.gx +
-          (int64_t)sample.gy * sample.gy +
-          (int64_t)sample.gz * sample.gz;
+          (int64_t)sample.gx * (int64_t)sample.gx +
+          (int64_t)sample.gy * (int64_t)sample.gy +
+          (int64_t)sample.gz * (int64_t)sample.gz;
 
-      if ((swing_active == 0U) && (gyro_mag2 > SWING_GYRO_THRESHOLD2))
+      switch (swing_state)
       {
-        swing_active = 1U;
-        swing_start_time = sample.timestamp_ms;
+        case SWING_STATE_IDLE:
+        {
+          if ((gyro_mag2 > SWING_START_THRESHOLD2) &&
+              (acc_mag2 > SWING_START_ACC_THRESHOLD2))
+          {
+            swing_state = SWING_STATE_CANDIDATE;
 
-        Debug_Log(DEBUG_LEVEL_INFO,
-                  DEBUG_CLASS_COMM,
-                  "SWING_START t=%lu",
-                  (unsigned long)swing_start_time);
-      }
+            candidate_start_time = sample.timestamp_ms;
+            swing_start_time = sample.timestamp_ms;
+            swing_peak_time = sample.timestamp_ms;
+            swing_peak_gmag2 = gyro_mag2;
 
-      if ((swing_active == 1U) && (gyro_mag2 < SWING_GYRO_THRESHOLD2))
-      {
-        swing_active = 0U;
+            peak_gx_mdps = sample.gx;
+            peak_gy_mdps = sample.gy;
+            peak_gz_mdps = sample.gz;
+          }
+          break;
+        }
 
-        Debug_Log(DEBUG_LEVEL_INFO,
-                  DEBUG_CLASS_COMM,
-                  "SWING_END t=%lu duration=%lu",
-                  (unsigned long)sample.timestamp_ms,
-                  (unsigned long)(sample.timestamp_ms - swing_start_time));
+        case SWING_STATE_CANDIDATE:
+        {
+          uint8_t swing_condition =
+            (gyro_mag2 > SWING_START_THRESHOLD2) &&
+            (acc_mag2 > SWING_START_ACC_THRESHOLD2);
+
+          if (gyro_mag2 > swing_peak_gmag2)
+          {
+            swing_peak_gmag2 = gyro_mag2;
+            swing_peak_time = sample.timestamp_ms;
+
+            peak_gx_mdps = sample.gx;
+            peak_gy_mdps = sample.gy;
+            peak_gz_mdps = sample.gz;
+          }
+
+          if (!swing_condition)
+          {
+            swing_state = SWING_STATE_IDLE;
+          }
+          else if ((sample.timestamp_ms - candidate_start_time) >= SWING_CONFIRM_MS)
+          {
+            swing_state = SWING_STATE_SWINGING;
+
+            Debug_Log(DEBUG_LEVEL_INFO,
+                      DEBUG_CLASS_COMM,
+                      "SWING_START t=%lu",
+                      (unsigned long)swing_start_time);
+          }
+          break;
+        }
+
+        case SWING_STATE_SWINGING:
+        {
+          if (gyro_mag2 > swing_peak_gmag2)
+          {
+            swing_peak_gmag2 = gyro_mag2;
+            swing_peak_time = sample.timestamp_ms;
+
+            peak_gx_mdps = sample.gx;
+            peak_gy_mdps = sample.gy;
+            peak_gz_mdps = sample.gz;
+          }
+
+          if (gyro_mag2 < SWING_END_THRESHOLD2)
+          {
+            uint32_t duration = sample.timestamp_ms - swing_start_time;
+
+            if (duration >= SWING_MIN_DURATION_MS)
+            {
+              char peak_gmag2_text[32];
+
+              swing_end_time = sample.timestamp_ms;
+              cooldown_start_time = sample.timestamp_ms;
+              swing_state = SWING_STATE_COOLDOWN;
+
+              FormatInt64(peak_gmag2_text,
+                          sizeof(peak_gmag2_text),
+                          swing_peak_gmag2);
+
+              Debug_Log(DEBUG_LEVEL_INFO,
+                        DEBUG_CLASS_COMM,
+                        "SWING_END t=%lu duration=%lu peak_t=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
+                        (unsigned long)swing_end_time,
+                        (unsigned long)duration,
+                        (unsigned long)swing_peak_time,
+                        (long)peak_gx_mdps,
+                        (long)peak_gy_mdps,
+                        (long)peak_gz_mdps,
+                        peak_gmag2_text,
+                        (unsigned long)dropped_samples);
+            }
+            else
+            {
+              cooldown_start_time = sample.timestamp_ms;
+              swing_state = SWING_STATE_COOLDOWN;
+            }
+          }
+          break;
+        }
+
+        case SWING_STATE_COOLDOWN:
+        {
+          if ((sample.timestamp_ms - cooldown_start_time) >= SWING_COOLDOWN_MS)
+          {
+            swing_state = SWING_STATE_IDLE;
+          }
+          break;
+        }
+
+        default:
+        {
+          swing_state = SWING_STATE_IDLE;
+          break;
+        }
       }
 
 #if ENABLE_IMU_RAW_LOG
-      char acc_mag2_text[24];
-      char gyro_mag2_text[24];
+      {
+        char acc_mag2_text[24];
+        char gyro_mag2_text[24];
 
-      FormatInt64(acc_mag2_text, sizeof(acc_mag2_text), acc_mag2);
-      FormatInt64(gyro_mag2_text, sizeof(gyro_mag2_text), gyro_mag2);
+        FormatInt64(acc_mag2_text, sizeof(acc_mag2_text), acc_mag2);
+        FormatInt64(gyro_mag2_text, sizeof(gyro_mag2_text), gyro_mag2);
 
-      Debug_Log(DEBUG_LEVEL_DEBUG,
-                DEBUG_CLASS_COMM,
-                "imu t=%lu dt=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld amag2=%s gmag2=%s dropped=%lu",
-                (unsigned long)sample.timestamp_ms,
-                (unsigned long)sample.dt_ms,
-                (long)sample.ax,
-                (long)sample.ay,
-                (long)sample.az,
-                (long)sample.gx,
-                (long)sample.gy,
-                (long)sample.gz,
-                acc_mag2_text,
-                gyro_mag2_text,
-                (unsigned long)dropped_samples);
+        Debug_Log(DEBUG_LEVEL_DEBUG,
+                  DEBUG_CLASS_COMM,
+                  "imu t=%lu dt=%lu acc_mg=%ld,%ld,%ld gyro_mdps=%ld,%ld,%ld amag2=%s gmag2=%s dropped=%lu",
+                  (unsigned long)sample.timestamp_ms,
+                  (unsigned long)sample.dt_ms,
+                  (long)sample.ax,
+                  (long)sample.ay,
+                  (long)sample.az,
+                  (long)sample.gx,
+                  (long)sample.gy,
+                  (long)sample.gz,
+                  acc_mag2_text,
+                  gyro_mag2_text,
+                  (unsigned long)dropped_samples);
+      }
 #endif
     }
   }
