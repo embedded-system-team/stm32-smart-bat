@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEBUG_LOG_BUFFER_SIZE 160U
+#define DEBUG_LOG_BUFFER_SIZE 256U
 
 static UART_HandleTypeDef *debug_uart;
 static osMutexId_t debug_uart_mutex;
