@@ -77,6 +77,8 @@ typedef struct {
 #define SWING_COOLDOWN_MS              1200U
 
 #define SWING_CONFIRM_MS                48U
+
+#define BAT_SWEET_SPOT_DISTANCE_MM  650UL
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -126,6 +128,7 @@ static int32_t ImuInit(void);
 
 static int32_t ImuCalibrateGyroBias(void);
 static void FormatInt64(char *buffer, size_t buffer_size, int64_t value);
+static uint32_t Isqrt64(uint64_t x);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -444,12 +447,24 @@ void StartCommTask(void *argument)
                           sizeof(peak_gmag2_text),
                           swing_peak_gmag2);
 
+              uint32_t peak_mdps = Isqrt64((uint64_t)swing_peak_gmag2);
+              uint32_t peak_dps = peak_mdps / 1000U;
+
+              uint32_t estimated_speed_mm_s =
+                (uint32_t)(((uint64_t)BAT_SWEET_SPOT_DISTANCE_MM *
+                            (uint64_t)peak_mdps * 355ULL) / (113ULL * 180000ULL));
+
+              uint32_t estimated_speed_m_s_x100 =
+                estimated_speed_mm_s / 10U;
+
               Debug_Log(DEBUG_LEVEL_INFO,
                         DEBUG_CLASS_COMM,
-                        "SWING_END t=%lu duration=%lu peak_t=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
+                        "SWING_END t=%lu duration=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
                         (unsigned long)swing_end_time,
                         (unsigned long)duration,
                         (unsigned long)swing_peak_time,
+                        (unsigned long)peak_dps,
+                        (unsigned long)estimated_speed_m_s_x100,
                         (long)peak_gx_mdps,
                         (long)peak_gy_mdps,
                         (long)peak_gz_mdps,
@@ -642,6 +657,32 @@ static int32_t ImuCalibrateGyroBias(void)
             (long)gyro_bias_z);
 
   return LSM6DSL_OK;
+}
+
+static uint32_t Isqrt64(uint64_t x)
+{
+  uint64_t op = x;
+  uint64_t res = 0;
+  uint64_t one = 1ULL << 62;
+
+  while (one > op)
+  {
+    one >>= 2;
+  }
+
+  while (one != 0)
+  {
+    if (op >= res + one)
+    {
+      op -= res + one;
+      res = res + 2 * one;
+    }
+
+    res >>= 1;
+    one >>= 2;
+  }
+
+  return (uint32_t)res;
 }
 
 /* USER CODE END Application */
