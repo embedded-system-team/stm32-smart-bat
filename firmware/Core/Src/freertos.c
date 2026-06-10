@@ -132,6 +132,20 @@ const osThreadAttr_t commTask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* Definitions for wifiTask */
+osThreadId_t wifiTaskHandle;
+const osThreadAttr_t wifiTask_attributes = {
+  .name = "wifiTask",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for udpTask */
+osThreadId_t udpTaskHandle;
+const osThreadAttr_t udpTask_attributes = {
+  .name = "udpTask",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -149,6 +163,8 @@ static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms);
 void StartDefaultTask(void *argument);
 void StartSensorTask(void *argument);
 void StartCommTask(void *argument);
+void StartWifiTask(void *argument);
+void StartUdpTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -194,6 +210,12 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of commTask */
   commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
+
+  /* creation of wifiTask */
+  wifiTaskHandle = osThreadNew(StartWifiTask, NULL, &wifiTask_attributes);
+
+  /* creation of udpTask */
+  udpTaskHandle = osThreadNew(StartUdpTask, NULL, &udpTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -563,6 +585,42 @@ void StartCommTask(void *argument)
   /* USER CODE END StartCommTask */
 }
 
+/* USER CODE BEGIN Header_StartWifiTask */
+/**
+* @brief Function implementing the wifiTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartWifiTask */
+void StartWifiTask(void *argument)
+{
+  /* USER CODE BEGIN StartWifiTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartWifiTask */
+}
+
+/* USER CODE BEGIN Header_StartUdpTask */
+/**
+* @brief Function implementing the udpTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUdpTask */
+void StartUdpTask(void *argument)
+{
+  /* USER CODE BEGIN StartUdpTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartUdpTask */
+}
+
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 static void ImuDelay(uint32_t ms)
@@ -806,3 +864,4 @@ static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms)
 }
 
 /* USER CODE END Application */
+
