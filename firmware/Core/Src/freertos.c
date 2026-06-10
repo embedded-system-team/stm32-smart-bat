@@ -31,6 +31,8 @@
 #include "usart.h"
 #include <stdio.h>
 #include "cmsis_os2.h"
+#include <string.h>
+#include "dma.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -79,6 +81,16 @@ typedef struct {
 #define SWING_CONFIRM_MS                48U
 
 #define BAT_SWEET_SPOT_DISTANCE_MM  650UL
+
+// DMA
+#define COMM_RX_DMA_SIZE     64U
+#define COMM_RX_LINE_SIZE    64U
+#define COMM_FLAG_RX_READY   (1U << 0)
+
+static uint8_t comm_rx_dma_buf[COMM_RX_DMA_SIZE];
+static char comm_rx_line[COMM_RX_LINE_SIZE];
+static volatile uint16_t comm_rx_line_len = 0U;
+static volatile uint8_t comm_rx_line_ready = 0U;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -129,6 +141,9 @@ static int32_t ImuInit(void);
 static int32_t ImuCalibrateGyroBias(void);
 static void FormatInt64(char *buffer, size_t buffer_size, int64_t value);
 static uint32_t Isqrt64(uint64_t x);
+
+static void Comm_StartRxDmaIdle(void);
+static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -328,6 +343,9 @@ void StartCommTask(void *argument)
   /* USER CODE BEGIN StartCommTask */
   IMUSample_t sample;
 
+  uint8_t pitch_active = 0U;
+  uint32_t pitch_time_ms = 0U;
+
   typedef enum {
     SWING_STATE_IDLE = 0,
     SWING_STATE_CANDIDATE,
@@ -352,9 +370,20 @@ void StartCommTask(void *argument)
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
+  Comm_StartRxDmaIdle();
+
   for (;;)
   {
-    if (osMessageQueueGet(imuQueueHandle, &sample, NULL, osWaitForever) == osOK)
+    uint32_t flags = osThreadFlagsWait(COMM_FLAG_RX_READY,
+                                      osFlagsWaitAny,
+                                      0U);
+
+    if ((flags & COMM_FLAG_RX_READY) != 0U)
+    {
+      Comm_ProcessRxLine(&pitch_active, &pitch_time_ms);
+    }
+
+    if (osMessageQueueGet(imuQueueHandle, &sample, NULL, 1U) == osOK)
     {
       int64_t acc_mag2 =
           (int64_t)sample.ax * (int64_t)sample.ax +
@@ -667,6 +696,10 @@ static int32_t ImuCalibrateGyroBias(void)
             (long)gyro_bias_y,
             (long)gyro_bias_z);
 
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_COMM,
+            "GAME_READY");
+
   return LSM6DSL_OK;
 }
 
@@ -696,5 +729,82 @@ static uint32_t Isqrt64(uint64_t x)
   return (uint32_t)res;
 }
 
-/* USER CODE END Application */
+static void Comm_StartRxDmaIdle(void)
+{
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1,
+                               comm_rx_dma_buf,
+                               COMM_RX_DMA_SIZE);
 
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART1)
+  {
+    uint16_t copy_len = Size;
+
+    if (copy_len >= COMM_RX_LINE_SIZE)
+    {
+      copy_len = COMM_RX_LINE_SIZE - 1U;
+    }
+
+    for (uint16_t i = 0U; i < copy_len; i++)
+    {
+      comm_rx_line[i] = (char)comm_rx_dma_buf[i];
+    }
+
+    comm_rx_line[copy_len] = '\0';
+    comm_rx_line_len = copy_len;
+    comm_rx_line_ready = 1U;
+
+    osThreadFlagsSet(commTaskHandle, COMM_FLAG_RX_READY);
+
+    Comm_StartRxDmaIdle();
+  }
+}
+
+static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms)
+{
+  char line[COMM_RX_LINE_SIZE];
+
+  if (comm_rx_line_ready == 0U)
+  {
+    return;
+  }
+
+  __disable_irq();
+
+  strncpy(line, comm_rx_line, sizeof(line));
+  line[sizeof(line) - 1U] = '\0';
+  comm_rx_line_ready = 0U;
+
+  __enable_irq();
+
+  for (uint32_t i = 0U; line[i] != '\0'; i++)
+  {
+    if ((line[i] == '\r') || (line[i] == '\n'))
+    {
+      line[i] = '\0';
+      break;
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_COMM,
+            "RX_LINE [%s]",
+            line);
+
+  if (strcmp(line, "PITCH") == 0)
+  {
+    *pitch_active = 1U;
+    *pitch_time_ms = HAL_GetTick();
+
+    Debug_Log(DEBUG_LEVEL_INFO,
+              DEBUG_CLASS_COMM,
+              "PITCH_SYNC t=%lu",
+              (unsigned long)(*pitch_time_ms));
+  }
+}
+
+/* USER CODE END Application */
