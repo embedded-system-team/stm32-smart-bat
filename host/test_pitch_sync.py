@@ -5,86 +5,57 @@ import time
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 
+with serial.Serial(PORT, BAUD, timeout=1) as ser:
+    print("waiting for STM32 boot / GAME_READY...")
 
-def open_serial():
-    ser = serial.Serial()
-    ser.port = PORT
-    ser.baudrate = BAUD
-    ser.timeout = 1
-    ser.rtscts = False
-    ser.dsrdtr = False
-    ser.open()
+    ready = False
+    deadline = time.monotonic() + 20.0
 
-    ser.dtr = False
-    ser.rts = False
+    while time.monotonic() < deadline:
+        raw = ser.readline()
+        if not raw:
+            continue
 
-    return ser
+        line = raw.decode(errors="replace").strip()
+        if line:
+            print(line)
 
+        if "GAME_READY" in line:
+            ready = True
+            break
 
-def main():
-    print("available ports:")
-    for p in serial.tools.list_ports.comports():
-        print(f"  {p.device}: {p.description}")
+    if not ready:
+        print("ERROR: no GAME_READY received")
+        raise SystemExit(1)
 
-    print(f"opening {PORT}...")
+    print("send PITCH")
+    ser.write(b"PITCH\n")
+    ser.flush()
 
-    with open_serial() as ser:
-        print("serial opened")
-        print("waiting for STM32 boot / GAME_READY...")
+    got_pitch_sync = False
+    got_swing_end = False
 
-        ready = False
-        deadline = time.monotonic() + 20.0
+    deadline = time.monotonic() + 15.0
 
-        while time.monotonic() < deadline:
-            try:
-                raw = ser.readline()
-            except serial.SerialException as e:
-                print(f"serial error: {e}")
-                return
+    while time.monotonic() < deadline:
+        raw = ser.readline()
+        if not raw:
+            continue
 
-            if not raw:
-                continue
+        line = raw.decode(errors="replace").strip()
+        if line:
+            print(line)
 
-            line = raw.decode(errors="replace").strip()
+        if "PITCH_SYNC" in line:
+            got_pitch_sync = True
 
-            if line:
-                print(line)
+        if "SWING_END" in line:
+            got_swing_end = True
+            break
 
-            if "GAME_READY" in line:
-                ready = True
-                break
-
-        if not ready:
-            print("ERROR: STM32 did not send GAME_READY")
-            return
-
-        print("send PITCH")
-        ser.write(b"PITCH\n")
-        ser.flush()
-
-        deadline = time.monotonic() + 3.0
-
-        while time.monotonic() < deadline:
-            try:
-                raw = ser.readline()
-            except serial.SerialException as e:
-                print(f"serial error after PITCH: {e}")
-                return
-
-            if not raw:
-                continue
-
-            line = raw.decode(errors="replace").strip()
-
-            if line:
-                print(line)
-
-            if "PITCH_SYNC" in line:
-                print("SYNC OK")
-                return
-
+    if got_pitch_sync and got_swing_end:
+        print("SYNC + SWING OK")
+    elif got_pitch_sync:
+        print("PITCH_SYNC OK, but no SWING_END received")
+    else:
         print("ERROR: no PITCH_SYNC received")
-
-
-if __name__ == "__main__":
-    main()
