@@ -40,3 +40,6 @@ data/*.log
 *.bak
 *~
 *.swp
+
+# WiFi Configuration
+firmware/Core/Inc/wifi_credentials.h
