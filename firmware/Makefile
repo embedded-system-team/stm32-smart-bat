@@ -90,7 +90,10 @@ Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F/port.c \
 Drivers/BSP/Components/lsm6dsl/lsm6dsl_reg.c \
 Drivers/BSP/Components/lsm6dsl/lsm6dsl.c \
 Drivers/BSP/B-L475E-IOT01A1/b_l475e_iot01a1_bus.c \
-Core/Src/dma.c
+Core/Src/dma.c \
+Drivers/BSP/B-L475E-IOT01A1/wifi.c \
+Drivers/BSP/Components/es_wifi/es_wifi.c \
+Drivers/BSP/Components/es_wifi/es_wifi_io.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -163,17 +166,8 @@ C_INCLUDES =  \
 -IDrivers/BSP/B-L475EOT01A1 \
 -IDrivers/BSP/Components/lsm6dsl \
 -IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475EOT01A1 \
--IDrivers/BSP/B-L475E-IOT01A1
+-IDrivers/BSP/B-L475E-IOT01A1 \
+-IDrivers/BSP/Components/es_wifi
 
 
 # compile gcc flags
