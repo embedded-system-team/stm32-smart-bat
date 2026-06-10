@@ -20,6 +20,7 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "dfsdm.h"
+#include "dma.h"
 #include "quadspi.h"
 #include "spi.h"
 #include "usart.h"
@@ -93,6 +94,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_DFSDM1_Init();
   MX_QUADSPI_Init();
   MX_SPI3_Init();
