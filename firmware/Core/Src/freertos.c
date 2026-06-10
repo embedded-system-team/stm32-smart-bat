@@ -486,30 +486,28 @@ void StartCommTask(void *argument)
               uint32_t estimated_speed_m_s_x100 =
                 estimated_speed_mm_s / 10U;
 
-              // Debug_Log(DEBUG_LEVEL_INFO,
-              //           DEBUG_CLASS_COMM,
-              //           "SWING_END t=%lu duration=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu peak_gyro_mdps=%ld,%ld,%ld peak_gmag2=%s dropped=%lu",
-              //           (unsigned long)swing_end_time,
-              //           (unsigned long)duration,
-              //           (unsigned long)swing_peak_time,
-              //           (unsigned long)peak_dps,
-              //           (unsigned long)estimated_speed_m_s_x100,
-              //           (long)peak_gx_mdps,
-              //           (long)peak_gy_mdps,
-              //           (long)peak_gz_mdps,
-              //           peak_gmag2_text,
-              //           (unsigned long)dropped_samples);
+              uint32_t start_rt = 0U;
+              uint32_t peak_rt = 0U;
 
-              // Short Log
+              if (pitch_active != 0U)
+              {
+                start_rt = swing_start_time - pitch_time_ms;
+                peak_rt = swing_peak_time - pitch_time_ms;
+              }
+
               Debug_Log(DEBUG_LEVEL_INFO,
                         DEBUG_CLASS_COMM,
-                        "SWING_END t=%lu dur=%lu peak_t=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
+                        "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
                         (unsigned long)swing_end_time,
                         (unsigned long)duration,
                         (unsigned long)swing_peak_time,
+                        (unsigned long)start_rt,
+                        (unsigned long)peak_rt,
                         (unsigned long)peak_dps,
                         (unsigned long)estimated_speed_m_s_x100,
                         (unsigned long)dropped_samples);
+
+              pitch_active = 0U;
             }
             else
             {
