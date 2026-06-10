@@ -116,7 +116,7 @@ osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for sensorTask */
 osThreadId_t sensorTaskHandle;
@@ -598,6 +598,7 @@ void StartWifiTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "wifiTask start");
     osDelay(1);
   }
   /* USER CODE END StartWifiTask */
@@ -616,6 +617,7 @@ void StartUdpTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "udpTask start");
     osDelay(1);
   }
   /* USER CODE END StartUdpTask */

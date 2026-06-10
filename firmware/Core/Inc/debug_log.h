@@ -29,6 +29,7 @@ typedef enum {
   DEBUG_CLASS_SYSTEM = 0,
   DEBUG_CLASS_IMU,
   DEBUG_CLASS_COMM,
+  DEBUG_CLASS_WIFI
 } DebugClass_t;
 
 void DebugLog_Init(UART_HandleTypeDef *huart);
