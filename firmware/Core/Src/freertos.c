@@ -33,6 +33,9 @@
 #include "cmsis_os2.h"
 #include <string.h>
 #include "dma.h"
+#include "wifi.h"
+#include "wifi_credentials.h"
+#include <stdarg.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +52,10 @@ typedef struct {
   int32_t gy;
   int32_t gz;
 } IMUSample_t;
+
+typedef struct {
+  char line[160];
+} UdpTxMessage_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -87,6 +94,10 @@ typedef struct {
 #define COMM_RX_DMA_SIZE     64U
 #define COMM_RX_LINE_SIZE    64U
 #define COMM_FLAG_RX_READY   (1U << 0)
+#define COMM_FLAG_UDP_PITCH  (1U << 1)
+#define UDP_FLAG_WIFI_READY  (1U << 0)
+#define UDP_TX_QUEUE_DEPTH   16U
+#define UDP_TX_LINE_SIZE     160U
 
 static uint8_t comm_rx_dma_buf[COMM_RX_DMA_SIZE];
 static char comm_rx_line[COMM_RX_LINE_SIZE];
@@ -105,19 +116,23 @@ static LSM6DSL_Object_t imu;
 
 static uint32_t dropped_samples = 0;
 static osMessageQueueId_t imuQueueHandle;
+static osMessageQueueId_t udpTxQueueHandle;
 
 static int32_t gyro_bias_x = 0;
 static int32_t gyro_bias_y = 0;
 static int32_t gyro_bias_z = 0;
 
 static uint32_t imu_read_failures = 0;
+
+static volatile uint8_t udp_pitch_pending = 0U;
+static volatile uint32_t udp_pitch_round = 0U;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for sensorTask */
 osThreadId_t sensorTaskHandle;
@@ -133,6 +148,20 @@ const osThreadAttr_t commTask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* Definitions for wifiTask */
+osThreadId_t wifiTaskHandle;
+const osThreadAttr_t wifiTask_attributes = {
+  .name = "wifiTask",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for udpTask */
+osThreadId_t udpTaskHandle;
+const osThreadAttr_t udpTask_attributes = {
+  .name = "udpTask",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -145,11 +174,19 @@ static uint32_t Isqrt64(uint64_t x);
 
 static void Comm_StartRxDmaIdle(void);
 static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms);
+static void Comm_SendGameEvent(const char *fmt, ...);
+static void Udp_SendQueuedMessages(uint16_t *sent_len);
+static const char *WifiEcnName(WIFI_Ecn_t ecn);
+static const char *WifiStatusName(WIFI_Status_t status);
+static void Wifi_LogConfiguredNetwork(void);
+static void Wifi_LogAccessPoints(void);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
 void StartSensorTask(void *argument);
 void StartCommTask(void *argument);
+void StartWifiTask(void *argument);
+void StartUdpTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -184,6 +221,13 @@ void MX_FREERTOS_Init(void) {
     Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "imuQueue create failed");
     Error_Handler();
   }
+
+  udpTxQueueHandle = osMessageQueueNew(UDP_TX_QUEUE_DEPTH, sizeof(UdpTxMessage_t), NULL);
+  if (udpTxQueueHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "udpTxQueue create failed");
+    Error_Handler();
+  }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -195,6 +239,12 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of commTask */
   commTaskHandle = osThreadNew(StartCommTask, NULL, &commTask_attributes);
+
+  /* creation of wifiTask */
+  wifiTaskHandle = osThreadNew(StartWifiTask, NULL, &wifiTask_attributes);
+
+  /* creation of udpTask */
+  udpTaskHandle = osThreadNew(StartUdpTask, NULL, &udpTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -211,6 +261,16 @@ void MX_FREERTOS_Init(void) {
   if (commTaskHandle == NULL)
   {
     Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "commTask create failed");
+    Error_Handler();
+  }
+  if (wifiTaskHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "wifiTask create failed");
+    Error_Handler();
+  }
+  if (udpTaskHandle == NULL)
+  {
+    Debug_Log(DEBUG_LEVEL_CRITICAL, DEBUG_CLASS_SYSTEM, "udpTask create failed");
     Error_Handler();
   }
   /* USER CODE END RTOS_THREADS */
@@ -363,10 +423,6 @@ void StartCommTask(void *argument)
 
   int64_t swing_peak_gmag2 = 0;
 
-  int32_t peak_gx_mdps = 0;
-  int32_t peak_gy_mdps = 0;
-  int32_t peak_gz_mdps = 0;
-
   uint32_t candidate_start_time = 0U;
 
   /* 馬達短脈衝設定 */
@@ -380,13 +436,27 @@ void StartCommTask(void *argument)
 
   for (;;)
   {
-    uint32_t flags = osThreadFlagsWait(COMM_FLAG_RX_READY,
+    uint32_t flags = osThreadFlagsWait(COMM_FLAG_RX_READY | COMM_FLAG_UDP_PITCH,
                                       osFlagsWaitAny,
                                       0U);
-    
+
     if ((flags & COMM_FLAG_RX_READY) != 0U)
     {
       Comm_ProcessRxLine(&pitch_active, &pitch_time_ms);
+    }
+
+    if (((flags & COMM_FLAG_UDP_PITCH) != 0U) || (udp_pitch_pending != 0U)) {
+      uint32_t round = udp_pitch_round;
+      uint32_t now_ms = HAL_GetTick();
+
+      udp_pitch_pending = 0U;
+
+      pitch_active = 1U;
+      pitch_time_ms = now_ms;
+
+      Comm_SendGameEvent("PITCH_SYNC round=%lu t=%lu",
+                         (unsigned long)round,
+                         (unsigned long)pitch_time_ms);
     }
 
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, 1U) == osOK)
@@ -423,9 +493,6 @@ void StartCommTask(void *argument)
             swing_peak_time = sample.timestamp_ms;
             swing_peak_gmag2 = gyro_mag2;
 
-            peak_gx_mdps = sample.gx;
-            peak_gy_mdps = sample.gy;
-            peak_gz_mdps = sample.gz;
           }
           break;
         }
@@ -441,9 +508,6 @@ void StartCommTask(void *argument)
             swing_peak_gmag2 = gyro_mag2;
             swing_peak_time = sample.timestamp_ms;
 
-            peak_gx_mdps = sample.gx;
-            peak_gy_mdps = sample.gy;
-            peak_gz_mdps = sample.gz;
           }
 
           if (!swing_condition)
@@ -460,10 +524,12 @@ void StartCommTask(void *argument)
                       (unsigned long)swing_start_time);
 
             Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "MOTOR_ON");
-            /* 揮棒確認 -> 短脈衝打擊感 */
+
             HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_SET);
             motor_on = 1U;
             motor_on_start = sample.timestamp_ms;
+            Comm_SendGameEvent("SWING_START t=%lu",
+                               (unsigned long)swing_start_time);
           }
           break;
         }
@@ -475,9 +541,6 @@ void StartCommTask(void *argument)
             swing_peak_gmag2 = gyro_mag2;
             swing_peak_time = sample.timestamp_ms;
 
-            peak_gx_mdps = sample.gx;
-            peak_gy_mdps = sample.gy;
-            peak_gz_mdps = sample.gz;
           }
 
           if (gyro_mag2 < SWING_END_THRESHOLD2)
@@ -515,17 +578,15 @@ void StartCommTask(void *argument)
                 peak_rt = swing_peak_time - pitch_time_ms;
               }
 
-              Debug_Log(DEBUG_LEVEL_INFO,
-                        DEBUG_CLASS_COMM,
-                        "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
-                        (unsigned long)swing_end_time,
-                        (unsigned long)duration,
-                        (unsigned long)swing_peak_time,
-                        (unsigned long)start_rt,
-                        (unsigned long)peak_rt,
-                        (unsigned long)peak_dps,
-                        (unsigned long)estimated_speed_m_s_x100,
-                        (unsigned long)dropped_samples);
+              Comm_SendGameEvent("SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
+                                 (unsigned long)swing_end_time,
+                                 (unsigned long)duration,
+                                 (unsigned long)swing_peak_time,
+                                 (unsigned long)start_rt,
+                                 (unsigned long)peak_rt,
+                                 (unsigned long)peak_dps,
+                                 (unsigned long)estimated_speed_m_s_x100,
+                                 (unsigned long)dropped_samples);
 
               pitch_active = 0U;
             }
@@ -581,6 +642,208 @@ void StartCommTask(void *argument)
     }
   }
   /* USER CODE END StartCommTask */
+}
+
+/* USER CODE BEGIN Header_StartWifiTask */
+/**
+* @brief Function implementing the wifiTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartWifiTask */
+void StartWifiTask(void *argument)
+{
+  /* USER CODE BEGIN StartWifiTask */
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "wifiTask start");
+
+  osDelay(10000);
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Init start");
+
+  if (WIFI_Init() != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_ERROR, DEBUG_CLASS_WIFI, "WIFI_Init failed");
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Init ok");
+
+  Wifi_LogConfiguredNetwork();
+  Wifi_LogAccessPoints();
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect start");
+
+  WIFI_Status_t connect_status = WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK);
+
+  if (connect_status != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_ERROR,
+              DEBUG_CLASS_WIFI,
+              "WIFI_Connect failed status=%s(%d)",
+              WifiStatusName(connect_status),
+              (int)connect_status);
+
+    Wifi_LogAccessPoints();
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect ok");
+
+  uint8_t ipaddr[4] = {0};
+
+  if (WIFI_GetIP_Address(ipaddr, 4) == WIFI_STATUS_OK) {
+    char msg[96];
+
+    snprintf(msg, sizeof(msg),
+            "IP = %u.%u.%u.%u",
+            ipaddr[0], ipaddr[1], ipaddr[2], ipaddr[3]);
+
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, msg);
+  } else {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_GetIP_Address failed");
+  }
+
+  osThreadFlagsSet(udpTaskHandle, UDP_FLAG_WIFI_READY);
+
+  for (;;) {
+    osDelay(1000);
+  }
+  /* USER CODE END StartWifiTask */
+}
+
+/* USER CODE BEGIN Header_StartUdpTask */
+/**
+* @brief Function implementing the udpTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUdpTask */
+void StartUdpTask(void *argument)
+{
+  /* USER CODE BEGIN StartUdpTask */
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "udpTask start");
+
+  osThreadFlagsWait(UDP_FLAG_WIFI_READY,
+                    osFlagsWaitAny,
+                    osWaitForever);
+
+  uint8_t server_ip[4] = SERVER_IP;
+
+  uint16_t sent_len = 0;
+  uint16_t recv_len = 0;
+
+  uint8_t rx_buf[128];
+  uint8_t remote_ip[4] = {0};
+  uint16_t remote_port = 0;
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client start");
+
+  /*
+   * remote = PC_IP:SERVER_PORT
+   * local  = STM32_UDP_PORT
+   */
+  if (WIFI_OpenClientConnection(0,
+                                WIFI_UDP_PROTOCOL,
+                                "smartbat_udp",
+                                server_ip,
+                                SERVER_PORT,
+                                STM32_UDP_PORT) != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client failed");
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client ok");
+
+  const char *hello = "HELLO_FROM_STM32\n";
+
+  if (WIFI_SendData(0,
+                    (const uint8_t *)hello,
+                    strlen(hello),
+                    &sent_len,
+                    1000) == WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP HELLO sent");
+  } else {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP HELLO send failed");
+  }
+
+  Udp_SendQueuedMessages(&sent_len);
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP receive loop start");
+
+  for (;;) {
+    Udp_SendQueuedMessages(&sent_len);
+
+    memset(rx_buf, 0, sizeof(rx_buf));
+    memset(remote_ip, 0, sizeof(remote_ip));
+    recv_len = 0;
+    remote_port = 0;
+
+    WIFI_Status_t st = WIFI_ReceiveDataFrom(0,
+                                            rx_buf,
+                                            sizeof(rx_buf) - 1,
+                                            &recv_len,
+                                            500,
+                                            remote_ip,
+                                            4,
+                                            &remote_port);
+
+    if (st == WIFI_STATUS_OK && recv_len > 0) {
+      rx_buf[recv_len] = '\0';
+
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP rx ok");
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, (char *)rx_buf);
+
+      if (strncmp((char *)rx_buf, "PING", 4) == 0) {
+        const char *pong = "PONG_FROM_STM32\n";
+
+        if (WIFI_SendData(0,
+                          (const uint8_t *)pong,
+                          strlen(pong),
+                          &sent_len,
+                          1000) == WIFI_STATUS_OK) {
+          Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PONG sent");
+        } else {
+          Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PONG send failed");
+        }
+      }
+      else if (strncmp((char *)rx_buf, "PITCH", 5) == 0) {
+        unsigned long round = 0UL;
+
+        /*
+        * Expected format:
+        * PITCH round=1
+        */
+        sscanf((char *)rx_buf, "PITCH round=%lu", &round);
+
+        udp_pitch_round = (uint32_t)round;
+        udp_pitch_pending = 1U;
+        osThreadFlagsSet(commTaskHandle, COMM_FLAG_UDP_PITCH);
+
+        Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PITCH queued");
+      }
+    } else {
+      static uint32_t last_log = 0;
+      uint32_t now = HAL_GetTick();
+
+      if (now - last_log > 2000) {
+        Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP rx timeout/no data");
+        last_log = now;
+      }
+    }
+
+    osDelay(10);
+  }
+
+  /* USER CODE END StartUdpTask */
 }
 
 /* Private application code --------------------------------------------------*/
@@ -714,9 +977,7 @@ static int32_t ImuCalibrateGyroBias(void)
             (long)gyro_bias_y,
             (long)gyro_bias_z);
 
-  Debug_Log(DEBUG_LEVEL_INFO,
-            DEBUG_CLASS_COMM,
-            "GAME_READY");
+  Comm_SendGameEvent("GAME_READY");
 
   return LSM6DSL_OK;
 }
@@ -818,11 +1079,188 @@ static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms)
     *pitch_active = 1U;
     *pitch_time_ms = HAL_GetTick();
 
+    Comm_SendGameEvent("PITCH_SYNC t=%lu",
+                       (unsigned long)(*pitch_time_ms));
+  }
+}
+
+static void Comm_SendGameEvent(const char *fmt, ...)
+{
+  UdpTxMessage_t msg;
+  va_list args;
+
+  if (fmt == NULL)
+  {
+    return;
+  }
+
+  va_start(args, fmt);
+  int len = vsnprintf(msg.line, sizeof(msg.line), fmt, args);
+  va_end(args);
+
+  if (len < 0)
+  {
+    return;
+  }
+
+  msg.line[sizeof(msg.line) - 1U] = '\0';
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "%s", msg.line);
+
+  if (udpTxQueueHandle != NULL)
+  {
+    (void)osMessageQueuePut(udpTxQueueHandle, &msg, 0U, 0U);
+  }
+}
+
+static void Udp_SendQueuedMessages(uint16_t *sent_len)
+{
+  UdpTxMessage_t msg;
+  char tx_line[UDP_TX_LINE_SIZE + 2U];
+
+  if ((udpTxQueueHandle == NULL) || (sent_len == NULL))
+  {
+    return;
+  }
+
+  while (osMessageQueueGet(udpTxQueueHandle, &msg, NULL, 0U) == osOK)
+  {
+    size_t len = 0U;
+
+    while ((len < sizeof(msg.line)) && (msg.line[len] != '\0'))
+    {
+      len++;
+    }
+
+    if (len >= UDP_TX_LINE_SIZE)
+    {
+      len = UDP_TX_LINE_SIZE - 1U;
+    }
+
+    memcpy(tx_line, msg.line, len);
+    tx_line[len++] = '\n';
+    tx_line[len] = '\0';
+
+    if (WIFI_SendData(0,
+                      (const uint8_t *)tx_line,
+                      (uint16_t)len,
+                      sent_len,
+                      1000) != WIFI_STATUS_OK)
+    {
+      Debug_Log(DEBUG_LEVEL_WARN, DEBUG_CLASS_WIFI, "UDP event send failed");
+      break;
+    }
+  }
+}
+
+static const char *WifiEcnName(WIFI_Ecn_t ecn)
+{
+  switch (ecn)
+  {
+    case WIFI_ECN_OPEN:
+      return "OPEN";
+    case WIFI_ECN_WEP:
+      return "WEP";
+    case WIFI_ECN_WPA_PSK:
+      return "WPA";
+    case WIFI_ECN_WPA2_PSK:
+      return "WPA2";
+    case WIFI_ECN_WPA_WPA2_PSK:
+      return "WPA/WPA2";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static const char *WifiStatusName(WIFI_Status_t status)
+{
+  switch (status)
+  {
+    case WIFI_STATUS_OK:
+      return "OK";
+    case WIFI_STATUS_ERROR:
+      return "ERROR";
+    case WIFI_STATUS_NOT_SUPPORTED:
+      return "NOT_SUPPORTED";
+    case WIFI_STATUS_JOINED:
+      return "JOINED";
+    case WIFI_STATUS_ASSIGNED:
+      return "ASSIGNED";
+    case WIFI_STATUS_TIMEOUT:
+      return "TIMEOUT";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static void Wifi_LogConfiguredNetwork(void)
+{
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_WIFI,
+            "WiFi config ssid=\"%s\" ssid_len=%lu pass_len=%lu security=%s",
+            WIFI_SSID,
+            (unsigned long)strlen(WIFI_SSID),
+            (unsigned long)strlen(WIFI_PASSWORD),
+            WifiEcnName(WIFI_ECN_WPA2_PSK));
+}
+
+static void Wifi_LogAccessPoints(void)
+{
+  static WIFI_APs_t aps;
+  WIFI_Status_t scan_status;
+  uint8_t found_target = 0U;
+
+  memset(&aps, 0, sizeof(aps));
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI scan start");
+
+  scan_status = WIFI_ListAccessPoints(&aps, WIFI_MAX_APS);
+
+  if (scan_status != WIFI_STATUS_OK)
+  {
+    Debug_Log(DEBUG_LEVEL_WARN,
+              DEBUG_CLASS_WIFI,
+              "WIFI scan failed status=%s(%d)",
+              WifiStatusName(scan_status),
+              (int)scan_status);
+    return;
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO,
+            DEBUG_CLASS_WIFI,
+            "WIFI scan ok count=%u",
+            aps.count);
+
+  for (uint8_t i = 0U; i < aps.count; i++)
+  {
+    const WIFI_AP_t *ap = &aps.ap[i];
+    uint8_t is_target = (strcmp(ap->SSID, WIFI_SSID) == 0);
+
+    if (is_target != 0U)
+    {
+      found_target = 1U;
+    }
+
     Debug_Log(DEBUG_LEVEL_INFO,
-              DEBUG_CLASS_COMM,
-              "PITCH_SYNC t=%lu",
-              (unsigned long)(*pitch_time_ms));
+              DEBUG_CLASS_WIFI,
+              "AP[%u]%s ssid=\"%s\" rssi=%d ecn=%s(%d) ch=%u",
+              i,
+              (is_target != 0U) ? " TARGET" : "",
+              ap->SSID,
+              (int)ap->RSSI,
+              WifiEcnName(ap->Ecn),
+              (int)ap->Ecn,
+              ap->Channel);
+  }
+
+  if (found_target == 0U)
+  {
+    Debug_Log(DEBUG_LEVEL_WARN,
+              DEBUG_CLASS_WIFI,
+              "Configured SSID not found in scan: \"%s\"",
+              WIFI_SSID);
   }
 }
 
 /* USER CODE END Application */
+

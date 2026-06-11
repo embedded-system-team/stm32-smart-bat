@@ -142,6 +142,8 @@ static const char *DebugClassName(DebugClass_t debug_class)
       return "IMU";
     case DEBUG_CLASS_COMM:
       return "COMM";
+    case DEBUG_CLASS_WIFI:
+      return "WIFI";
     default:
       return "UNKNOWN";
   }

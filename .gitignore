@@ -41,6 +41,9 @@ data/*.log
 *~
 *.swp
 
-# Godot 自動產生的快取,不要進 git
+# Godot
 godot_smartbat/.godot/
 *.uid
+
+# WiFi Configuration
+firmware/Core/Inc/wifi_credentials.h
