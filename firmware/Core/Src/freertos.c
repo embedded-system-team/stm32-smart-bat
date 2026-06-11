@@ -659,11 +659,47 @@ void StartUdpTask(void *argument)
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "udpTask start");
 
-  /* Infinite loop */
-  for(;;)
-  {
+  // TODO: change to event flag
+  osDelay(25000);
+
+  uint8_t server_ip[4] = SERVER_IP;
+  uint16_t sent_len = 0;
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client start");
+
+  if (WIFI_OpenClientConnection(0,
+                                WIFI_UDP_PROTOCOL,
+                                "smartbat_udp",
+                                server_ip,
+                                SERVER_PORT,
+                                STM32_UDP_PORT) != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client failed");
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client ok");
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send test start");
+
+  for (;;) {
+    const char *msg = "HELLO_FROM_STM32\n";
+
+    if (WIFI_SendData(0,
+                      (const uint8_t *)msg,
+                      strlen(msg),
+                      &sent_len,
+                      1000) == WIFI_STATUS_OK) {
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send ok");
+    } else {
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send failed");
+    }
+
     osDelay(1000);
   }
+
   /* USER CODE END StartUdpTask */
 }
 
