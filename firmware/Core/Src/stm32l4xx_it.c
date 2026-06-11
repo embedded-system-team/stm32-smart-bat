@@ -172,8 +172,8 @@ void EXTI1_IRQHandler(void)
 
   /* USER CODE END EXTI1_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(ISM43362_DRDY_EXTI1_Pin);
-  SPI_WIFI_ISR();
   /* USER CODE BEGIN EXTI1_IRQn 1 */
+  SPI_WIFI_ISR();
 
   /* USER CODE END EXTI1_IRQn 1 */
 }
@@ -242,20 +242,6 @@ void EXTI15_10_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles SPI3 global interrupt.
-  */
-void SPI3_IRQHandler(void)
-{
-  /* USER CODE BEGIN SPI3_IRQn 0 */
-
-  /* USER CODE END SPI3_IRQn 0 */
-  HAL_SPI_IRQHandler(&hspi);
-  /* USER CODE BEGIN SPI3_IRQn 1 */
-
-  /* USER CODE END SPI3_IRQn 1 */
-}
-
-/**
   * @brief This function handles TIM6 global interrupt, DAC channel1 and channel2 underrun error interrupts.
   */
 void TIM6_DAC_IRQHandler(void)
@@ -270,5 +256,19 @@ void TIM6_DAC_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles SPI3 global interrupt.
+  */
+void SPI3_IRQHandler(void)
+{
+  /* USER CODE BEGIN SPI3_IRQn 0 */
+
+  /* USER CODE END SPI3_IRQn 0 */
+  HAL_SPI_IRQHandler(&hspi);
+  /* USER CODE BEGIN SPI3_IRQn 1 */
+
+  /* USER CODE END SPI3_IRQn 1 */
+}
 
 /* USER CODE END 1 */
