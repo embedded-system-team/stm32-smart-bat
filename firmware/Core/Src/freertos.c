@@ -33,6 +33,8 @@
 #include "cmsis_os2.h"
 #include <string.h>
 #include "dma.h"
+#include "wifi.h"
+#include "wifi_credentials.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -595,11 +597,25 @@ void StartCommTask(void *argument)
 void StartWifiTask(void *argument)
 {
   /* USER CODE BEGIN StartWifiTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "wifiTask start");
-    osDelay(1);
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "wifiTask start");
+
+  osDelay(10000);
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Init start");
+
+  if (WIFI_Init() != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_ERROR, DEBUG_CLASS_WIFI, "WIFI_Init failed");
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Init ok");
+
+  for (;;) {
+    osDelay(1000);
   }
   /* USER CODE END StartWifiTask */
 }
@@ -614,11 +630,13 @@ void StartWifiTask(void *argument)
 void StartUdpTask(void *argument)
 {
   /* USER CODE BEGIN StartUdpTask */
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "udpTask start");
+
   /* Infinite loop */
   for(;;)
   {
-    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "udpTask start");
-    osDelay(1);
+    osDelay(1000);
   }
   /* USER CODE END StartUdpTask */
 }
