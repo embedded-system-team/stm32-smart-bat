@@ -60,7 +60,7 @@ python3 -m pip install pyserial
 
 ## Wi-Fi Configuration
 
-Do not commit real Wi-Fi credentials to GitHub. Create a local credentials header from the template:
+Create a local credentials header from the template:
 
 ```bash
 cp firmware/Core/Inc/wifi_credentials.h.template firmware/Core/Inc/wifi_credentials.h
@@ -75,8 +75,6 @@ Then edit `firmware/Core/Inc/wifi_credentials.h`:
 #define SERVER_PORT 5005
 #define STM32_UDP_PORT 5006
 ```
-
-`SERVER_IP` should be the IP address of the host computer running the Python bridge. `.gitignore` already excludes `firmware/Core/Inc/wifi_credentials.h`, but it is still worth checking `git status` before publishing.
 
 ## Build the Firmware
 
@@ -125,12 +123,6 @@ Default ports:
 - STM32 local UDP port is `5006`
 - Bridge forwards events to Godot at `127.0.0.1:4242`
 
-To specify the STM32 IP address manually:
-
-```bash
-python3 host/swing_bridge.py --source udp --stm32-ip 192.168.0.159
-```
-
 ### UART Mode
 
 To read debug logs from the ST-LINK serial port:
@@ -144,16 +136,3 @@ You can also specify the serial port manually:
 ```bash
 python3 host/swing_bridge.py --source serial --serial-port /dev/ttyACM0
 ```
-
-Common ports are `COM3` on Windows and `/dev/ttyACM0` or `/dev/ttyUSB0` on Linux.
-
-## Test Utilities
-
-The `host/` directory contains helper scripts:
-
-- `test_udp_recv.py`: receive UDP packets
-- `test_udp_ping.py`: send `PING` to the STM32 board
-- `test_udp_pitch.py`: test UDP pitch commands
-- `test_pitch_sync.py`: test serial pitch synchronization
-- `swing_reader.py`: read and parse serial swing events
-- `swing_game_udp.py`, `swing_game_sync.py`, `swing_game_fake3d.py`: earlier pygame demos and synchronization tests
