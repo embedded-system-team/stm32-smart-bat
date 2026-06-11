@@ -40,3 +40,7 @@ data/*.log
 *.bak
 *~
 *.swp
+
+# Godot 自動產生的快取,不要進 git
+godot_smartbat/.godot/
+*.uid
