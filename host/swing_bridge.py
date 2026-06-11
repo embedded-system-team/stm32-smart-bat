@@ -17,6 +17,12 @@ Godot payload:
     "rms_dps": <CMSIS-DSP RMS angular speed>,
     "energy": <CMSIS-DSP swing energy index>,
     "cmsis_peak_dps": <CMSIS-DSP peak angular speed>,
+    "mean_dps": <CMSIS-DSP mean angular speed>,
+    "std_dps": <CMSIS-DSP angular speed standard deviation>,
+    "min_dps": <CMSIS-DSP minimum angular speed>,
+    "filt_rms_dps": <FIR-filtered RMS angular speed>,
+    "filt_energy": <FIR-filtered energy index>,
+    "filt_peak_dps": <FIR-filtered peak angular speed>,
     "dsp_n": <CMSIS-DSP sample count>,
     "drop": <dropped IMU samples>,
     "dsp_drop": <dropped CMSIS-DSP samples>
@@ -84,6 +90,12 @@ class SwingLineParser:
         rms_dps = fields.get("rms_dps", 0)
         energy = fields.get("energy", 0)
         cmsis_peak_dps = fields.get("cmsis_peak", 0)
+        mean_dps = fields.get("mean_dps", 0)
+        std_dps = fields.get("std_dps", 0)
+        min_dps = fields.get("min_dps", 0)
+        filt_rms_dps = fields.get("filt_rms", 0)
+        filt_energy = fields.get("filt_energy", 0)
+        filt_peak_dps = fields.get("filt_peak", 0)
         dsp_n = fields.get("dsp_n", 0)
         drop = fields.get("drop", 0)
         dsp_drop = fields.get("dsp_drop", 0)
@@ -113,6 +125,12 @@ class SwingLineParser:
             "rms_dps": rms_dps,
             "energy": energy,
             "cmsis_peak_dps": cmsis_peak_dps,
+            "mean_dps": mean_dps,
+            "std_dps": std_dps,
+            "min_dps": min_dps,
+            "filt_rms_dps": filt_rms_dps,
+            "filt_energy": filt_energy,
+            "filt_peak_dps": filt_peak_dps,
             "dsp_n": dsp_n,
             "drop": drop,
             "dsp_drop": dsp_drop,

@@ -59,13 +59,21 @@ typedef struct {
   float rms_dps;
   float energy;
   float cmsis_peak_dps;
+  float mean_dps;
+  float std_dps;
+  float min_dps;
+  float filt_rms_dps;
+  float filt_energy;
+  float filt_peak_dps;
   uint32_t peak_index;
+  uint32_t min_index;
+  uint32_t filt_peak_index;
   uint32_t sample_count;
   uint32_t dropped_count;
 } SwingDspMetrics_t;
 
 typedef struct {
-  char line[256];
+  char line[512];
   uint8_t repeat_count;
 } UdpTxMessage_t;
 /* USER CODE END PTD */
@@ -109,11 +117,16 @@ typedef struct {
 #define COMM_FLAG_UDP_PITCH  (1U << 1)
 #define UDP_FLAG_WIFI_READY  (1U << 0)
 #define UDP_TX_QUEUE_DEPTH   16U
-#define UDP_TX_LINE_SIZE     256U
+#define UDP_TX_LINE_SIZE     512U
 #define UDP_GAME_EVENT_REPEATS 3U
 #define UDP_GAME_EVENT_REPEAT_DELAY_MS 20U
+#define WIFI_CONNECT_RETRY_DELAY_MS 2500U
+#define WIFI_CONNECT_RETRY_DELAY_STEP_MS 1500U
+#define WIFI_CONNECT_RETRY_DELAY_MAX_MS 10000U
+#define WIFI_CONNECT_SCAN_INTERVAL 3U
 
 #define SWING_DSP_MAX_SAMPLES 128U
+#define SWING_DSP_FIR_TAPS    5U
 
 static uint8_t comm_rx_dma_buf[COMM_RX_DMA_SIZE];
 static char comm_rx_line[COMM_RX_LINE_SIZE];
@@ -144,6 +157,11 @@ static volatile uint8_t udp_pitch_pending = 0U;
 static volatile uint32_t udp_pitch_round = 0U;
 
 static float swing_gyro_mag_buf[SWING_DSP_MAX_SAMPLES];
+static float swing_gyro_filt_buf[SWING_DSP_MAX_SAMPLES];
+static float swing_gyro_fir_state[SWING_DSP_MAX_SAMPLES + SWING_DSP_FIR_TAPS - 1U];
+static const float swing_gyro_fir_coeffs[SWING_DSP_FIR_TAPS] = {
+  0.2f, 0.2f, 0.2f, 0.2f, 0.2f
+};
 static uint32_t swing_dsp_count = 0U;
 static uint32_t swing_dsp_dropped = 0U;
 /* USER CODE END Variables */
@@ -204,6 +222,7 @@ static const char *WifiEcnName(WIFI_Ecn_t ecn);
 static const char *WifiStatusName(WIFI_Status_t status);
 static void Wifi_LogConfiguredNetwork(void);
 static void Wifi_LogAccessPoints(void);
+static void Wifi_WaitUntilConnected(void);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -617,7 +636,7 @@ void StartCommTask(void *argument)
               }
 
               Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
-                                         "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu rms_dps=%lu energy=%lu cmsis_peak=%lu dsp_n=%lu drop=%lu dsp_drop=%lu",
+                                         "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu rms_dps=%lu energy=%lu cmsis_peak=%lu mean_dps=%lu std_dps=%lu min_dps=%lu filt_rms=%lu filt_energy=%lu filt_peak=%lu dsp_n=%lu drop=%lu dsp_drop=%lu",
                                          (unsigned long)swing_end_time,
                                          (unsigned long)duration,
                                          (unsigned long)swing_peak_time,
@@ -628,6 +647,12 @@ void StartCommTask(void *argument)
                                          (unsigned long)(uint32_t)(dsp_metrics.rms_dps + 0.5f),
                                          (unsigned long)(uint32_t)(dsp_metrics.energy + 0.5f),
                                          (unsigned long)(uint32_t)(dsp_metrics.cmsis_peak_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.mean_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.std_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.min_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_rms_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_energy + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_peak_dps + 0.5f),
                                          (unsigned long)dsp_metrics.sample_count,
                                          (unsigned long)dropped_samples,
                                          (unsigned long)dsp_metrics.dropped_count);
@@ -719,25 +744,7 @@ void StartWifiTask(void *argument)
   Wifi_LogConfiguredNetwork();
   Wifi_LogAccessPoints();
 
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect start");
-
-  WIFI_Status_t connect_status = WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK);
-
-  if (connect_status != WIFI_STATUS_OK) {
-    Debug_Log(DEBUG_LEVEL_ERROR,
-              DEBUG_CLASS_WIFI,
-              "WIFI_Connect failed status=%s(%d)",
-              WifiStatusName(connect_status),
-              (int)connect_status);
-
-    Wifi_LogAccessPoints();
-
-    for (;;) {
-      osDelay(1000);
-    }
-  }
-
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect ok");
+  Wifi_WaitUntilConnected();
 
   uint8_t ipaddr[4] = {0};
 
@@ -1091,7 +1098,15 @@ static void SwingDsp_Compute(SwingDspMetrics_t *metrics)
   metrics->rms_dps = 0.0f;
   metrics->energy = 0.0f;
   metrics->cmsis_peak_dps = 0.0f;
+  metrics->mean_dps = 0.0f;
+  metrics->std_dps = 0.0f;
+  metrics->min_dps = 0.0f;
+  metrics->filt_rms_dps = 0.0f;
+  metrics->filt_energy = 0.0f;
+  metrics->filt_peak_dps = 0.0f;
   metrics->peak_index = 0U;
+  metrics->min_index = 0U;
+  metrics->filt_peak_index = 0U;
   metrics->sample_count = swing_dsp_count;
   metrics->dropped_count = swing_dsp_dropped;
 
@@ -1106,6 +1121,27 @@ static void SwingDsp_Compute(SwingDspMetrics_t *metrics)
               swing_dsp_count,
               &metrics->cmsis_peak_dps,
               &metrics->peak_index);
+  arm_mean_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->mean_dps);
+  arm_std_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->std_dps);
+  arm_min_f32(swing_gyro_mag_buf,
+              swing_dsp_count,
+              &metrics->min_dps,
+              &metrics->min_index);
+
+  arm_fir_instance_f32 fir;
+  arm_fir_init_f32(&fir,
+                   SWING_DSP_FIR_TAPS,
+                   (float *)swing_gyro_fir_coeffs,
+                   swing_gyro_fir_state,
+                   swing_dsp_count);
+  arm_fir_f32(&fir, swing_gyro_mag_buf, swing_gyro_filt_buf, swing_dsp_count);
+
+  arm_rms_f32(swing_gyro_filt_buf, swing_dsp_count, &metrics->filt_rms_dps);
+  arm_power_f32(swing_gyro_filt_buf, swing_dsp_count, &metrics->filt_energy);
+  arm_max_f32(swing_gyro_filt_buf,
+              swing_dsp_count,
+              &metrics->filt_peak_dps,
+              &metrics->filt_peak_index);
 }
 
 static void Comm_StartRxDmaIdle(void)
@@ -1389,5 +1425,61 @@ static void Wifi_LogAccessPoints(void)
   }
 }
 
-/* USER CODE END Application */
+static void Wifi_WaitUntilConnected(void)
+{
+  uint32_t attempt = 1U;
+  uint32_t retry_delay_ms = WIFI_CONNECT_RETRY_DELAY_MS;
 
+  for (;;)
+  {
+    Debug_Log(DEBUG_LEVEL_INFO,
+              DEBUG_CLASS_WIFI,
+              "WIFI_Connect start attempt=%lu",
+              (unsigned long)attempt);
+
+    WIFI_Status_t connect_status = WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK);
+
+    if (connect_status == WIFI_STATUS_OK)
+    {
+      Debug_Log(DEBUG_LEVEL_INFO,
+                DEBUG_CLASS_WIFI,
+                "WIFI_Connect ok attempt=%lu",
+                (unsigned long)attempt);
+      return;
+    }
+
+    Debug_Log(DEBUG_LEVEL_WARN,
+              DEBUG_CLASS_WIFI,
+              "WIFI_Connect failed attempt=%lu status=%s(%d)",
+              (unsigned long)attempt,
+              WifiStatusName(connect_status),
+              (int)connect_status);
+
+    (void)WIFI_Disconnect();
+
+    if ((attempt % WIFI_CONNECT_SCAN_INTERVAL) == 0U)
+    {
+      Wifi_LogAccessPoints();
+    }
+
+    Debug_Log(DEBUG_LEVEL_INFO,
+              DEBUG_CLASS_WIFI,
+              "WIFI retry in %lu ms",
+              (unsigned long)retry_delay_ms);
+
+    osDelay(retry_delay_ms);
+
+    if (retry_delay_ms < WIFI_CONNECT_RETRY_DELAY_MAX_MS)
+    {
+      retry_delay_ms += WIFI_CONNECT_RETRY_DELAY_STEP_MS;
+      if (retry_delay_ms > WIFI_CONNECT_RETRY_DELAY_MAX_MS)
+      {
+        retry_delay_ms = WIFI_CONNECT_RETRY_DELAY_MAX_MS;
+      }
+    }
+
+    attempt++;
+  }
+}
+
+/* USER CODE END Application */

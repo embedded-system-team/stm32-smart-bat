@@ -94,9 +94,14 @@ Core/Src/dma.c \
 Drivers/BSP/B-L475E-IOT01A1/wifi.c \
 Drivers/BSP/Components/es_wifi/es_wifi.c \
 Drivers/BSP/Components/es_wifi/es_wifi_io.c \
+Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_f32.c \
+Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_init_f32.c \
 Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_max_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_mean_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_min_f32.c \
 Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_power_f32.c \
-Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_rms_f32.c
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_rms_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_std_f32.c
 
 # ASM sources
 ASM_SOURCES =  \
