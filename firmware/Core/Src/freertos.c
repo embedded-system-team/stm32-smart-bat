@@ -29,6 +29,8 @@
 #include "debug_log.h"
 #include "lsm6dsl.h"
 #include "usart.h"
+#include "arm_math.h"
+#include <math.h>
 #include <stdio.h>
 #include "cmsis_os2.h"
 #include <string.h>
@@ -54,7 +56,25 @@ typedef struct {
 } IMUSample_t;
 
 typedef struct {
-  char line[160];
+  float rms_dps;
+  float energy;
+  float cmsis_peak_dps;
+  float mean_dps;
+  float std_dps;
+  float min_dps;
+  float filt_rms_dps;
+  float filt_energy;
+  float filt_peak_dps;
+  uint32_t peak_index;
+  uint32_t min_index;
+  uint32_t filt_peak_index;
+  uint32_t sample_count;
+  uint32_t dropped_count;
+} SwingDspMetrics_t;
+
+typedef struct {
+  char line[512];
+  uint8_t repeat_count;
 } UdpTxMessage_t;
 /* USER CODE END PTD */
 
@@ -86,6 +106,7 @@ typedef struct {
 #define SWING_COOLDOWN_MS              1200U
 
 #define SWING_CONFIRM_MS                48U
+#define MOTOR_PULSE_MS                  300U 
 
 #define BAT_SWEET_SPOT_DISTANCE_MM  650UL
 
@@ -96,7 +117,16 @@ typedef struct {
 #define COMM_FLAG_UDP_PITCH  (1U << 1)
 #define UDP_FLAG_WIFI_READY  (1U << 0)
 #define UDP_TX_QUEUE_DEPTH   16U
-#define UDP_TX_LINE_SIZE     160U
+#define UDP_TX_LINE_SIZE     512U
+#define UDP_GAME_EVENT_REPEATS 3U
+#define UDP_GAME_EVENT_REPEAT_DELAY_MS 20U
+#define WIFI_CONNECT_RETRY_DELAY_MS 2500U
+#define WIFI_CONNECT_RETRY_DELAY_STEP_MS 1500U
+#define WIFI_CONNECT_RETRY_DELAY_MAX_MS 10000U
+#define WIFI_CONNECT_SCAN_INTERVAL 3U
+
+#define SWING_DSP_MAX_SAMPLES 128U
+#define SWING_DSP_FIR_TAPS    5U
 
 static uint8_t comm_rx_dma_buf[COMM_RX_DMA_SIZE];
 static char comm_rx_line[COMM_RX_LINE_SIZE];
@@ -125,6 +155,15 @@ static uint32_t imu_read_failures = 0;
 
 static volatile uint8_t udp_pitch_pending = 0U;
 static volatile uint32_t udp_pitch_round = 0U;
+
+static float swing_gyro_mag_buf[SWING_DSP_MAX_SAMPLES];
+static float swing_gyro_filt_buf[SWING_DSP_MAX_SAMPLES];
+static float swing_gyro_fir_state[SWING_DSP_MAX_SAMPLES + SWING_DSP_FIR_TAPS - 1U];
+static const float swing_gyro_fir_coeffs[SWING_DSP_FIR_TAPS] = {
+  0.2f, 0.2f, 0.2f, 0.2f, 0.2f
+};
+static uint32_t swing_dsp_count = 0U;
+static uint32_t swing_dsp_dropped = 0U;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -170,15 +209,20 @@ static int32_t ImuInit(void);
 static int32_t ImuCalibrateGyroBias(void);
 static void FormatInt64(char *buffer, size_t buffer_size, int64_t value);
 static uint32_t Isqrt64(uint64_t x);
+static void SwingDsp_Reset(void);
+static void SwingDsp_AppendSample(const IMUSample_t *sample);
+static void SwingDsp_Compute(SwingDspMetrics_t *metrics);
 
 static void Comm_StartRxDmaIdle(void);
 static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms);
-static void Comm_SendGameEvent(const char *fmt, ...);
+static void Comm_SendGameEventRepeated(uint8_t repeat_count, const char *fmt, ...);
+static void Comm_QueueGameEvent(uint8_t repeat_count, const char *fmt, va_list args);
 static void Udp_SendQueuedMessages(uint16_t *sent_len);
 static const char *WifiEcnName(WIFI_Ecn_t ecn);
 static const char *WifiStatusName(WIFI_Status_t status);
 static void Wifi_LogConfiguredNetwork(void);
 static void Wifi_LogAccessPoints(void);
+static void Wifi_WaitUntilConnected(void);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -424,9 +468,14 @@ void StartCommTask(void *argument)
 
   uint32_t candidate_start_time = 0U;
 
+  /* 馬達短脈衝設定 */
+  uint8_t  motor_on = 0U;
+  uint32_t motor_on_start = 0U;
+
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
   Comm_StartRxDmaIdle();
+
 
   for (;;)
   {
@@ -448,9 +497,10 @@ void StartCommTask(void *argument)
       pitch_active = 1U;
       pitch_time_ms = now_ms;
 
-      Comm_SendGameEvent("PITCH_SYNC round=%lu t=%lu",
-                         (unsigned long)round,
-                         (unsigned long)pitch_time_ms);
+      Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                 "PITCH_SYNC round=%lu t=%lu",
+                                 (unsigned long)round,
+                                 (unsigned long)pitch_time_ms);
     }
 
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, 1U) == osOK)
@@ -465,6 +515,14 @@ void StartCommTask(void *argument)
           (int64_t)sample.gy * (int64_t)sample.gy +
           (int64_t)sample.gz * (int64_t)sample.gz;
 
+      /* 脈衝時間到就關掉(非阻塞)*/
+      if (motor_on && (uint32_t)(sample.timestamp_ms - motor_on_start) >= MOTOR_PULSE_MS)
+      {
+        HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_RESET);
+        motor_on = 0U;
+      }
+
+
       switch (swing_state)
       {
         case SWING_STATE_IDLE:
@@ -478,6 +536,8 @@ void StartCommTask(void *argument)
             swing_start_time = sample.timestamp_ms;
             swing_peak_time = sample.timestamp_ms;
             swing_peak_gmag2 = gyro_mag2;
+            SwingDsp_Reset();
+            SwingDsp_AppendSample(&sample);
 
           }
           break;
@@ -498,20 +558,39 @@ void StartCommTask(void *argument)
 
           if (!swing_condition)
           {
+            SwingDsp_Reset();
             swing_state = SWING_STATE_IDLE;
           }
-          else if ((sample.timestamp_ms - candidate_start_time) >= SWING_CONFIRM_MS)
+          else
           {
-            swing_state = SWING_STATE_SWINGING;
+            SwingDsp_AppendSample(&sample);
 
-            Comm_SendGameEvent("SWING_START t=%lu",
-                               (unsigned long)swing_start_time);
+            if ((sample.timestamp_ms - candidate_start_time) >= SWING_CONFIRM_MS)
+            {
+              swing_state = SWING_STATE_SWINGING;
+
+              Debug_Log(DEBUG_LEVEL_INFO,
+                        DEBUG_CLASS_COMM,
+                        "SWING_START t=%lu",
+                        (unsigned long)swing_start_time);
+
+              Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "MOTOR_ON");
+
+              HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_SET);
+              motor_on = 1U;
+              motor_on_start = sample.timestamp_ms;
+              Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                         "SWING_START t=%lu",
+                                         (unsigned long)swing_start_time);
+            }
           }
           break;
         }
 
         case SWING_STATE_SWINGING:
         {
+          SwingDsp_AppendSample(&sample);
+
           if (gyro_mag2 > swing_peak_gmag2)
           {
             swing_peak_gmag2 = gyro_mag2;
@@ -526,10 +605,12 @@ void StartCommTask(void *argument)
             if (duration >= SWING_MIN_DURATION_MS)
             {
               char peak_gmag2_text[32];
+              SwingDspMetrics_t dsp_metrics;
 
               swing_end_time = sample.timestamp_ms;
               cooldown_start_time = sample.timestamp_ms;
               swing_state = SWING_STATE_COOLDOWN;
+              SwingDsp_Compute(&dsp_metrics);
 
               FormatInt64(peak_gmag2_text,
                           sizeof(peak_gmag2_text),
@@ -554,20 +635,33 @@ void StartCommTask(void *argument)
                 peak_rt = swing_peak_time - pitch_time_ms;
               }
 
-              Comm_SendGameEvent("SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
-                                 (unsigned long)swing_end_time,
-                                 (unsigned long)duration,
-                                 (unsigned long)swing_peak_time,
-                                 (unsigned long)start_rt,
-                                 (unsigned long)peak_rt,
-                                 (unsigned long)peak_dps,
-                                 (unsigned long)estimated_speed_m_s_x100,
-                                 (unsigned long)dropped_samples);
+              Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                         "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu rms_dps=%lu energy=%lu cmsis_peak=%lu mean_dps=%lu std_dps=%lu min_dps=%lu filt_rms=%lu filt_energy=%lu filt_peak=%lu dsp_n=%lu drop=%lu dsp_drop=%lu",
+                                         (unsigned long)swing_end_time,
+                                         (unsigned long)duration,
+                                         (unsigned long)swing_peak_time,
+                                         (unsigned long)start_rt,
+                                         (unsigned long)peak_rt,
+                                         (unsigned long)peak_dps,
+                                         (unsigned long)estimated_speed_m_s_x100,
+                                         (unsigned long)(uint32_t)(dsp_metrics.rms_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.energy + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.cmsis_peak_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.mean_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.std_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.min_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_rms_dps + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_energy + 0.5f),
+                                         (unsigned long)(uint32_t)(dsp_metrics.filt_peak_dps + 0.5f),
+                                         (unsigned long)dsp_metrics.sample_count,
+                                         (unsigned long)dropped_samples,
+                                         (unsigned long)dsp_metrics.dropped_count);
 
               pitch_active = 0U;
             }
             else
             {
+              SwingDsp_Reset();
               cooldown_start_time = sample.timestamp_ms;
               swing_state = SWING_STATE_COOLDOWN;
             }
@@ -650,25 +744,7 @@ void StartWifiTask(void *argument)
   Wifi_LogConfiguredNetwork();
   Wifi_LogAccessPoints();
 
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect start");
-
-  WIFI_Status_t connect_status = WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK);
-
-  if (connect_status != WIFI_STATUS_OK) {
-    Debug_Log(DEBUG_LEVEL_ERROR,
-              DEBUG_CLASS_WIFI,
-              "WIFI_Connect failed status=%s(%d)",
-              WifiStatusName(connect_status),
-              (int)connect_status);
-
-    Wifi_LogAccessPoints();
-
-    for (;;) {
-      osDelay(1000);
-    }
-  }
-
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect ok");
+  Wifi_WaitUntilConnected();
 
   uint8_t ipaddr[4] = {0};
 
@@ -953,7 +1029,7 @@ static int32_t ImuCalibrateGyroBias(void)
             (long)gyro_bias_y,
             (long)gyro_bias_z);
 
-  Comm_SendGameEvent("GAME_READY");
+  Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS, "GAME_READY");
 
   return LSM6DSL_OK;
 }
@@ -982,6 +1058,90 @@ static uint32_t Isqrt64(uint64_t x)
   }
 
   return (uint32_t)res;
+}
+
+static void SwingDsp_Reset(void)
+{
+  swing_dsp_count = 0U;
+  swing_dsp_dropped = 0U;
+}
+
+static void SwingDsp_AppendSample(const IMUSample_t *sample)
+{
+  if (sample == NULL)
+  {
+    return;
+  }
+
+  if (swing_dsp_count >= SWING_DSP_MAX_SAMPLES)
+  {
+    swing_dsp_dropped++;
+    return;
+  }
+
+  float gx_dps = (float)sample->gx / 1000.0f;
+  float gy_dps = (float)sample->gy / 1000.0f;
+  float gz_dps = (float)sample->gz / 1000.0f;
+
+  swing_gyro_mag_buf[swing_dsp_count] =
+    sqrtf((gx_dps * gx_dps) + (gy_dps * gy_dps) + (gz_dps * gz_dps));
+  swing_dsp_count++;
+}
+
+static void SwingDsp_Compute(SwingDspMetrics_t *metrics)
+{
+  if (metrics == NULL)
+  {
+    return;
+  }
+
+  metrics->rms_dps = 0.0f;
+  metrics->energy = 0.0f;
+  metrics->cmsis_peak_dps = 0.0f;
+  metrics->mean_dps = 0.0f;
+  metrics->std_dps = 0.0f;
+  metrics->min_dps = 0.0f;
+  metrics->filt_rms_dps = 0.0f;
+  metrics->filt_energy = 0.0f;
+  metrics->filt_peak_dps = 0.0f;
+  metrics->peak_index = 0U;
+  metrics->min_index = 0U;
+  metrics->filt_peak_index = 0U;
+  metrics->sample_count = swing_dsp_count;
+  metrics->dropped_count = swing_dsp_dropped;
+
+  if (swing_dsp_count == 0U)
+  {
+    return;
+  }
+
+  arm_rms_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->rms_dps);
+  arm_power_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->energy);
+  arm_max_f32(swing_gyro_mag_buf,
+              swing_dsp_count,
+              &metrics->cmsis_peak_dps,
+              &metrics->peak_index);
+  arm_mean_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->mean_dps);
+  arm_std_f32(swing_gyro_mag_buf, swing_dsp_count, &metrics->std_dps);
+  arm_min_f32(swing_gyro_mag_buf,
+              swing_dsp_count,
+              &metrics->min_dps,
+              &metrics->min_index);
+
+  arm_fir_instance_f32 fir;
+  arm_fir_init_f32(&fir,
+                   SWING_DSP_FIR_TAPS,
+                   (float *)swing_gyro_fir_coeffs,
+                   swing_gyro_fir_state,
+                   swing_dsp_count);
+  arm_fir_f32(&fir, swing_gyro_mag_buf, swing_gyro_filt_buf, swing_dsp_count);
+
+  arm_rms_f32(swing_gyro_filt_buf, swing_dsp_count, &metrics->filt_rms_dps);
+  arm_power_f32(swing_gyro_filt_buf, swing_dsp_count, &metrics->filt_energy);
+  arm_max_f32(swing_gyro_filt_buf,
+              swing_dsp_count,
+              &metrics->filt_peak_dps,
+              &metrics->filt_peak_index);
 }
 
 static void Comm_StartRxDmaIdle(void)
@@ -1055,14 +1215,14 @@ static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms)
     *pitch_active = 1U;
     *pitch_time_ms = HAL_GetTick();
 
-    Comm_SendGameEvent("PITCH_SYNC t=%lu",
-                       (unsigned long)(*pitch_time_ms));
+    Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                               "PITCH_SYNC t=%lu",
+                               (unsigned long)(*pitch_time_ms));
   }
 }
 
-static void Comm_SendGameEvent(const char *fmt, ...)
+static void Comm_SendGameEventRepeated(uint8_t repeat_count, const char *fmt, ...)
 {
-  UdpTxMessage_t msg;
   va_list args;
 
   if (fmt == NULL)
@@ -1071,15 +1231,27 @@ static void Comm_SendGameEvent(const char *fmt, ...)
   }
 
   va_start(args, fmt);
-  int len = vsnprintf(msg.line, sizeof(msg.line), fmt, args);
+  Comm_QueueGameEvent(repeat_count, fmt, args);
   va_end(args);
+}
+
+static void Comm_QueueGameEvent(uint8_t repeat_count, const char *fmt, va_list args)
+{
+  UdpTxMessage_t msg;
+  int len = vsnprintf(msg.line, sizeof(msg.line), fmt, args);
 
   if (len < 0)
   {
     return;
   }
 
+  if (repeat_count == 0U)
+  {
+    repeat_count = 1U;
+  }
+
   msg.line[sizeof(msg.line) - 1U] = '\0';
+  msg.repeat_count = repeat_count;
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "%s", msg.line);
 
@@ -1125,6 +1297,21 @@ static void Udp_SendQueuedMessages(uint16_t *sent_len)
     {
       Debug_Log(DEBUG_LEVEL_WARN, DEBUG_CLASS_WIFI, "UDP event send failed");
       break;
+    }
+
+    for (uint8_t i = 1U; i < msg.repeat_count; i++)
+    {
+      osDelay(UDP_GAME_EVENT_REPEAT_DELAY_MS);
+
+      if (WIFI_SendData(0,
+                        (const uint8_t *)tx_line,
+                        (uint16_t)len,
+                        sent_len,
+                        1000) != WIFI_STATUS_OK)
+      {
+        Debug_Log(DEBUG_LEVEL_WARN, DEBUG_CLASS_WIFI, "UDP event resend failed");
+        break;
+      }
     }
   }
 }
@@ -1238,5 +1425,61 @@ static void Wifi_LogAccessPoints(void)
   }
 }
 
-/* USER CODE END Application */
+static void Wifi_WaitUntilConnected(void)
+{
+  uint32_t attempt = 1U;
+  uint32_t retry_delay_ms = WIFI_CONNECT_RETRY_DELAY_MS;
 
+  for (;;)
+  {
+    Debug_Log(DEBUG_LEVEL_INFO,
+              DEBUG_CLASS_WIFI,
+              "WIFI_Connect start attempt=%lu",
+              (unsigned long)attempt);
+
+    WIFI_Status_t connect_status = WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK);
+
+    if (connect_status == WIFI_STATUS_OK)
+    {
+      Debug_Log(DEBUG_LEVEL_INFO,
+                DEBUG_CLASS_WIFI,
+                "WIFI_Connect ok attempt=%lu",
+                (unsigned long)attempt);
+      return;
+    }
+
+    Debug_Log(DEBUG_LEVEL_WARN,
+              DEBUG_CLASS_WIFI,
+              "WIFI_Connect failed attempt=%lu status=%s(%d)",
+              (unsigned long)attempt,
+              WifiStatusName(connect_status),
+              (int)connect_status);
+
+    (void)WIFI_Disconnect();
+
+    if ((attempt % WIFI_CONNECT_SCAN_INTERVAL) == 0U)
+    {
+      Wifi_LogAccessPoints();
+    }
+
+    Debug_Log(DEBUG_LEVEL_INFO,
+              DEBUG_CLASS_WIFI,
+              "WIFI retry in %lu ms",
+              (unsigned long)retry_delay_ms);
+
+    osDelay(retry_delay_ms);
+
+    if (retry_delay_ms < WIFI_CONNECT_RETRY_DELAY_MAX_MS)
+    {
+      retry_delay_ms += WIFI_CONNECT_RETRY_DELAY_STEP_MS;
+      if (retry_delay_ms > WIFI_CONNECT_RETRY_DELAY_MAX_MS)
+      {
+        retry_delay_ms = WIFI_CONNECT_RETRY_DELAY_MAX_MS;
+      }
+    }
+
+    attempt++;
+  }
+}
+
+/* USER CODE END Application */

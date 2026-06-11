@@ -93,7 +93,15 @@ Drivers/BSP/B-L475E-IOT01A1/b_l475e_iot01a1_bus.c \
 Core/Src/dma.c \
 Drivers/BSP/B-L475E-IOT01A1/wifi.c \
 Drivers/BSP/Components/es_wifi/es_wifi.c \
-Drivers/BSP/Components/es_wifi/es_wifi_io.c
+Drivers/BSP/Components/es_wifi/es_wifi_io.c \
+Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_f32.c \
+Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_init_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_max_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_mean_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_min_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_power_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_rms_f32.c \
+Drivers/CMSIS/DSP/Source/StatisticsFunctions/arm_std_f32.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -146,11 +154,12 @@ AS_DEFS =
 # C defines
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
--DSTM32L475xx
+-DSTM32L475xx \
+-DARM_MATH_CM4
 
 
 # AS includes
-AS_INCLUDES = 
+AS_INCLUDES =
 
 # C includes
 C_INCLUDES =  \
@@ -159,6 +168,7 @@ C_INCLUDES =  \
 -IDrivers/STM32L4xx_HAL_Driver/Inc/Legacy \
 -IDrivers/CMSIS/Device/ST/STM32L4xx/Include \
 -IDrivers/CMSIS/Include \
+-IDrivers/CMSIS/DSP/Include \
 -IMiddlewares/Third_Party/FreeRTOS/Source/include \
 -IMiddlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 \
 -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F \
