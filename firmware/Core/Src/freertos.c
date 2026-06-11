@@ -79,6 +79,7 @@ typedef struct {
 #define SWING_COOLDOWN_MS              1200U
 
 #define SWING_CONFIRM_MS                48U
+#define MOTOR_PULSE_MS                  300U 
 
 #define BAT_SWEET_SPOT_DISTANCE_MM  650UL
 
@@ -368,16 +369,21 @@ void StartCommTask(void *argument)
 
   uint32_t candidate_start_time = 0U;
 
+  /* 馬達短脈衝設定 */
+  uint8_t  motor_on = 0U;
+  uint32_t motor_on_start = 0U;
+
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "Comm task start");
 
   Comm_StartRxDmaIdle();
+
 
   for (;;)
   {
     uint32_t flags = osThreadFlagsWait(COMM_FLAG_RX_READY,
                                       osFlagsWaitAny,
                                       0U);
-
+    
     if ((flags & COMM_FLAG_RX_READY) != 0U)
     {
       Comm_ProcessRxLine(&pitch_active, &pitch_time_ms);
@@ -394,6 +400,14 @@ void StartCommTask(void *argument)
           (int64_t)sample.gx * (int64_t)sample.gx +
           (int64_t)sample.gy * (int64_t)sample.gy +
           (int64_t)sample.gz * (int64_t)sample.gz;
+
+      /* 脈衝時間到就關掉(非阻塞)*/
+      if (motor_on && (uint32_t)(sample.timestamp_ms - motor_on_start) >= MOTOR_PULSE_MS)
+      {
+        HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_RESET);
+        motor_on = 0U;
+      }
+
 
       switch (swing_state)
       {
@@ -444,6 +458,12 @@ void StartCommTask(void *argument)
                       DEBUG_CLASS_COMM,
                       "SWING_START t=%lu",
                       (unsigned long)swing_start_time);
+
+            Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "MOTOR_ON");
+            /* 揮棒確認 -> 短脈衝打擊感 */
+            HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_SET);
+            motor_on = 1U;
+            motor_on_start = sample.timestamp_ms;
           }
           break;
         }
