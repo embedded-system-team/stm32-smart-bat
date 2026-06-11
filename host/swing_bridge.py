@@ -1,69 +1,141 @@
 """
-Smart Bat 序列 -> UDP 橋接 (跨平台 + 彈性欄位解析)
+Smart Bat -> Godot bridge.
 
-讓 Python 讀 STM32 的序列輸出,把每次揮棒事件用 UDP 丟給 Godot。
+Reads STM32 swing events from either:
+  - UDP packets sent by firmware, or
+  - UART debug logs from ST-LINK
 
-解析方式:
-    不再寫死欄位順序,而是把整行裡所有 key=value 都抓出來,
-    所以韌體多加 / 少加欄位(例如 start_rt, peak_rt)都不會壞。
+Then forwards each completed swing to Godot as JSON over UDP 127.0.0.1:4242.
 
-執行需求:
-    pip install pyserial
-
-用法:
-    python swing_bridge.py
-    (會自動掃描並選用 ST-LINK 的虛擬序列埠;找不到才用下面的 PORT 預設值)
+Godot payload:
+  {
+    "type": "swing",
+    "peak_age_ms": <milliseconds from swing peak to bridge send time>,
+    "peak_dps": <peak angular speed>,
+    "speed": <estimated bat speed m/s>,
+    "duration": <swing duration ms>,
+    "drop": <dropped IMU samples>
+  }
 """
 
+import argparse
 import json
 import re
 import socket
 import time
 
-import serial
-import serial.tools.list_ports
+
+try:
+    import serial
+    import serial.tools.list_ports
+except ModuleNotFoundError:
+    serial = None
 
 
-# 自動偵測失敗時的後備埠號(Windows 例如 "COM3",Linux 例如 "/dev/ttyACM0")
-PORT = "COM3"
-BAUD = 115200
+DEFAULT_SERIAL_PORT = "COM3"
+DEFAULT_BAUD = 115200
 
-UDP_IP = "127.0.0.1"
-UDP_PORT = 4242
+DEFAULT_STM32_LISTEN_HOST = "0.0.0.0"
+DEFAULT_STM32_LISTEN_PORT = 5005
+DEFAULT_STM32_TARGET_PORT = 5006
 
+DEFAULT_GODOT_IP = "127.0.0.1"
+DEFAULT_GODOT_PORT = 4242
 
-# 抓出整行裡所有 key=整數 的配對(可含負號)
+HEARTBEAT_INTERVAL_S = 1.0
+
 kv_re = re.compile(r"(\w+)=(-?\d+)")
 
 
 def parse_fields(line: str) -> dict:
-    """把 'a=1 b=2 c=-3' 解析成 {'a':1,'b':2,'c':-3}。"""
     return {k: int(v) for k, v in kv_re.findall(line)}
 
 
-def find_port() -> str:
+class SwingLineParser:
+    def __init__(self):
+        self.stm32_start_t = None
+        self.start_pc_time = None
+        self.last_end_t = None
+
+    def parse_line(self, line: str):
+        if "SWING_START" in line:
+            fields = parse_fields(line)
+            if "t" in fields:
+                self.stm32_start_t = fields["t"]
+                self.start_pc_time = time.monotonic()
+            return None
+
+        if "SWING_END" not in line:
+            return None
+
+        fields = parse_fields(line)
+        end_pc_time = time.monotonic()
+
+        stm32_end_t = fields.get("t", 0)
+        duration = fields.get("dur", 0)
+        peak_t = fields.get("peak_t", stm32_end_t)
+        peak_dps = fields.get("peak_dps", 0)
+        speed = fields.get("speed_x100", 0) / 100.0
+        drop = fields.get("drop", 0)
+
+        if stm32_end_t != 0 and stm32_end_t == self.last_end_t:
+            return None
+
+        self.last_end_t = stm32_end_t
+
+        if self.stm32_start_t is None or self.start_pc_time is None:
+            self.stm32_start_t = stm32_end_t - duration
+            self.start_pc_time = end_pc_time - duration / 1000.0
+
+        peak_offset_ms = peak_t - self.stm32_start_t
+        peak_pc_time = self.start_pc_time + peak_offset_ms / 1000.0
+        send_time = time.monotonic()
+
+        self.stm32_start_t = None
+        self.start_pc_time = None
+
+        return {
+            "type": "swing",
+            "peak_age_ms": (send_time - peak_pc_time) * 1000.0,
+            "peak_dps": peak_dps,
+            "speed": speed,
+            "duration": duration,
+            "drop": drop,
+        }
+
+
+def send_to_godot(sock: socket.socket, godot_addr, payload: dict):
+    sock.sendto(json.dumps(payload).encode("utf-8"), godot_addr)
+    print("  -> godot:", payload)
+
+
+def find_serial_port(default_port: str) -> str:
+    if serial is None:
+        raise RuntimeError("pyserial is required for --source serial. Install with: python3 -m pip install pyserial")
+
     candidates = list(serial.tools.list_ports.comports())
-    for p in candidates:
-        text = " ".join(filter(None, [p.description, p.manufacturer, p.product]))
-        if any(k in text for k in ("STLink", "ST-Link", "STMicro", "STM32")):
-            print(f"Auto-detected ST-LINK port: {p.device}  ({p.description})")
-            return p.device
-    print("找不到 ST-LINK,改用預設 PORT =", PORT)
-    for p in candidates:
-        print(f"  {p.device}  -  {p.description}")
-    return PORT
+    for port in candidates:
+        text = " ".join(filter(None, [port.description, port.manufacturer, port.product]))
+        if any(keyword in text for keyword in ("STLink", "ST-Link", "STMicro", "STM32")):
+            print(f"Auto-detected ST-LINK port: {port.device} ({port.description})")
+            return port.device
+
+    print(f"ST-LINK not found, using default serial port: {default_port}")
+    for port in candidates:
+        print(f"  {port.device} - {port.description}")
+    return default_port
 
 
-def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    port = find_port()
+def run_serial(args, godot_sock: socket.socket, godot_addr):
+    if serial is None:
+        raise RuntimeError("pyserial is required for --source serial. Install with: python3 -m pip install pyserial")
 
-    with serial.Serial(port, BAUD, timeout=1) as ser:
-        print(f"Reading {port} @ {BAUD}, forwarding to {UDP_IP}:{UDP_PORT} ...")
+    parser = SwingLineParser()
+    port = args.serial_port or find_serial_port(DEFAULT_SERIAL_PORT)
+
+    with serial.Serial(port, args.baud, timeout=1) as ser:
+        print(f"Reading serial {port} @ {args.baud}, forwarding to {godot_addr[0]}:{godot_addr[1]}")
         time.sleep(2)
-
-        stm32_start_t = None
-        start_pc_time = None
 
         while True:
             raw = ser.readline()
@@ -73,50 +145,88 @@ def main():
             line = raw.decode(errors="replace").strip()
             if not line:
                 continue
-            print(line)
 
-            # ---- SWING_START ----
-            if "SWING_START" in line:
-                f = parse_fields(line)
-                if "t" in f:
-                    stm32_start_t = f["t"]
-                    start_pc_time = time.monotonic()
+            print(line)
+            payload = parser.parse_line(line)
+            if payload is not None:
+                send_to_godot(godot_sock, godot_addr, payload)
+
+
+def run_udp(args, godot_sock: socket.socket, godot_addr):
+    parser = SwingLineParser()
+
+    stm32_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    stm32_sock.bind((args.listen_host, args.listen_port))
+    stm32_sock.settimeout(0.2)
+
+    stm32_addr = None
+    if args.stm32_ip is not None:
+        stm32_addr = (args.stm32_ip, args.stm32_port)
+
+    last_ping = 0.0
+
+    print(f"Listening for STM32 UDP on {args.listen_host}:{args.listen_port}")
+    print(f"Forwarding swings to Godot UDP {godot_addr[0]}:{godot_addr[1]}")
+    if stm32_addr is not None:
+        print(f"STM32 target preset: {stm32_addr[0]}:{stm32_addr[1]}")
+
+    while True:
+        now = time.monotonic()
+
+        if stm32_addr is not None and now - last_ping >= HEARTBEAT_INTERVAL_S:
+            stm32_sock.sendto(b"PING\n", stm32_addr)
+            last_ping = now
+
+        try:
+            data, addr = stm32_sock.recvfrom(2048)
+        except socket.timeout:
+            continue
+
+        if stm32_addr is None:
+            stm32_addr = addr
+            print(f"STM32 addr locked: {stm32_addr}")
+
+        text = data.decode(errors="replace")
+        for line in text.replace("\r", "\n").split("\n"):
+            line = line.strip()
+            if not line:
                 continue
 
-            # ---- SWING_END ----
-            if "SWING_END" in line:
-                f = parse_fields(line)
-                end_pc_time = time.monotonic()
+            print(line)
+            payload = parser.parse_line(line)
+            if payload is not None:
+                send_to_godot(godot_sock, godot_addr, payload)
 
-                stm32_end_t = f.get("t", 0)
-                duration = f.get("dur", 0)
-                peak_t = f.get("peak_t", stm32_end_t)
-                peak_dps = f.get("peak_dps", 0)
-                speed = f.get("speed_x100", 0) / 100.0
-                drop = f.get("drop", 0)
 
-                # 若沒收到對應的 SWING_START,用 duration 回推
-                if stm32_start_t is None or start_pc_time is None:
-                    stm32_start_t = stm32_end_t - duration
-                    start_pc_time = end_pc_time - duration / 1000.0
+def parse_args():
+    parser = argparse.ArgumentParser(description="Bridge STM32 smart bat events to Godot")
+    parser.add_argument("--source", choices=("udp", "serial"), default="udp")
 
-                peak_offset_ms = peak_t - stm32_start_t
-                peak_pc_time = start_pc_time + peak_offset_ms / 1000.0
+    parser.add_argument("--listen-host", default=DEFAULT_STM32_LISTEN_HOST)
+    parser.add_argument("--listen-port", type=int, default=DEFAULT_STM32_LISTEN_PORT)
+    parser.add_argument("--stm32-ip", default=None)
+    parser.add_argument("--stm32-port", type=int, default=DEFAULT_STM32_TARGET_PORT)
 
-                send_time = time.monotonic()
-                payload = {
-                    "type": "swing",
-                    "peak_age_ms": (send_time - peak_pc_time) * 1000.0,
-                    "peak_dps": peak_dps,
-                    "speed": speed,
-                    "duration": duration,
-                    "drop": drop,
-                }
-                sock.sendto(json.dumps(payload).encode("utf-8"), (UDP_IP, UDP_PORT))
-                print("  -> sent:", payload)
+    parser.add_argument("--serial-port", default=None)
+    parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
 
-                stm32_start_t = None
-                start_pc_time = None
+    parser.add_argument("--godot-ip", default=DEFAULT_GODOT_IP)
+    parser.add_argument("--godot-port", type=int, default=DEFAULT_GODOT_PORT)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    godot_addr = (args.godot_ip, args.godot_port)
+    godot_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        if args.source == "serial":
+            run_serial(args, godot_sock, godot_addr)
+        else:
+            run_udp(args, godot_sock, godot_addr)
+    finally:
+        godot_sock.close()
 
 
 if __name__ == "__main__":

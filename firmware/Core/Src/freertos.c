@@ -55,6 +55,7 @@ typedef struct {
 
 typedef struct {
   char line[160];
+  uint8_t repeat_count;
 } UdpTxMessage_t;
 /* USER CODE END PTD */
 
@@ -98,6 +99,8 @@ typedef struct {
 #define UDP_FLAG_WIFI_READY  (1U << 0)
 #define UDP_TX_QUEUE_DEPTH   16U
 #define UDP_TX_LINE_SIZE     160U
+#define UDP_GAME_EVENT_REPEATS 3U
+#define UDP_GAME_EVENT_REPEAT_DELAY_MS 20U
 
 static uint8_t comm_rx_dma_buf[COMM_RX_DMA_SIZE];
 static char comm_rx_line[COMM_RX_LINE_SIZE];
@@ -174,7 +177,8 @@ static uint32_t Isqrt64(uint64_t x);
 
 static void Comm_StartRxDmaIdle(void);
 static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms);
-static void Comm_SendGameEvent(const char *fmt, ...);
+static void Comm_SendGameEventRepeated(uint8_t repeat_count, const char *fmt, ...);
+static void Comm_QueueGameEvent(uint8_t repeat_count, const char *fmt, va_list args);
 static void Udp_SendQueuedMessages(uint16_t *sent_len);
 static const char *WifiEcnName(WIFI_Ecn_t ecn);
 static const char *WifiStatusName(WIFI_Status_t status);
@@ -454,9 +458,10 @@ void StartCommTask(void *argument)
       pitch_active = 1U;
       pitch_time_ms = now_ms;
 
-      Comm_SendGameEvent("PITCH_SYNC round=%lu t=%lu",
-                         (unsigned long)round,
-                         (unsigned long)pitch_time_ms);
+      Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                 "PITCH_SYNC round=%lu t=%lu",
+                                 (unsigned long)round,
+                                 (unsigned long)pitch_time_ms);
     }
 
     if (osMessageQueueGet(imuQueueHandle, &sample, NULL, 1U) == osOK)
@@ -528,8 +533,9 @@ void StartCommTask(void *argument)
             HAL_GPIO_WritePin(ARD_D8_GPIO_Port, ARD_D8_Pin, GPIO_PIN_SET);
             motor_on = 1U;
             motor_on_start = sample.timestamp_ms;
-            Comm_SendGameEvent("SWING_START t=%lu",
-                               (unsigned long)swing_start_time);
+            Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                       "SWING_START t=%lu",
+                                       (unsigned long)swing_start_time);
           }
           break;
         }
@@ -578,15 +584,16 @@ void StartCommTask(void *argument)
                 peak_rt = swing_peak_time - pitch_time_ms;
               }
 
-              Comm_SendGameEvent("SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
-                                 (unsigned long)swing_end_time,
-                                 (unsigned long)duration,
-                                 (unsigned long)swing_peak_time,
-                                 (unsigned long)start_rt,
-                                 (unsigned long)peak_rt,
-                                 (unsigned long)peak_dps,
-                                 (unsigned long)estimated_speed_m_s_x100,
-                                 (unsigned long)dropped_samples);
+              Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                                         "SWING_END t=%lu dur=%lu peak_t=%lu start_rt=%lu peak_rt=%lu peak_dps=%lu speed_x100=%lu drop=%lu",
+                                         (unsigned long)swing_end_time,
+                                         (unsigned long)duration,
+                                         (unsigned long)swing_peak_time,
+                                         (unsigned long)start_rt,
+                                         (unsigned long)peak_rt,
+                                         (unsigned long)peak_dps,
+                                         (unsigned long)estimated_speed_m_s_x100,
+                                         (unsigned long)dropped_samples);
 
               pitch_active = 0U;
             }
@@ -977,7 +984,7 @@ static int32_t ImuCalibrateGyroBias(void)
             (long)gyro_bias_y,
             (long)gyro_bias_z);
 
-  Comm_SendGameEvent("GAME_READY");
+  Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS, "GAME_READY");
 
   return LSM6DSL_OK;
 }
@@ -1079,14 +1086,14 @@ static void Comm_ProcessRxLine(uint8_t *pitch_active, uint32_t *pitch_time_ms)
     *pitch_active = 1U;
     *pitch_time_ms = HAL_GetTick();
 
-    Comm_SendGameEvent("PITCH_SYNC t=%lu",
-                       (unsigned long)(*pitch_time_ms));
+    Comm_SendGameEventRepeated(UDP_GAME_EVENT_REPEATS,
+                               "PITCH_SYNC t=%lu",
+                               (unsigned long)(*pitch_time_ms));
   }
 }
 
-static void Comm_SendGameEvent(const char *fmt, ...)
+static void Comm_SendGameEventRepeated(uint8_t repeat_count, const char *fmt, ...)
 {
-  UdpTxMessage_t msg;
   va_list args;
 
   if (fmt == NULL)
@@ -1095,15 +1102,27 @@ static void Comm_SendGameEvent(const char *fmt, ...)
   }
 
   va_start(args, fmt);
-  int len = vsnprintf(msg.line, sizeof(msg.line), fmt, args);
+  Comm_QueueGameEvent(repeat_count, fmt, args);
   va_end(args);
+}
+
+static void Comm_QueueGameEvent(uint8_t repeat_count, const char *fmt, va_list args)
+{
+  UdpTxMessage_t msg;
+  int len = vsnprintf(msg.line, sizeof(msg.line), fmt, args);
 
   if (len < 0)
   {
     return;
   }
 
+  if (repeat_count == 0U)
+  {
+    repeat_count = 1U;
+  }
+
   msg.line[sizeof(msg.line) - 1U] = '\0';
+  msg.repeat_count = repeat_count;
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_COMM, "%s", msg.line);
 
@@ -1149,6 +1168,21 @@ static void Udp_SendQueuedMessages(uint16_t *sent_len)
     {
       Debug_Log(DEBUG_LEVEL_WARN, DEBUG_CLASS_WIFI, "UDP event send failed");
       break;
+    }
+
+    for (uint8_t i = 1U; i < msg.repeat_count; i++)
+    {
+      osDelay(UDP_GAME_EVENT_REPEAT_DELAY_MS);
+
+      if (WIFI_SendData(0,
+                        (const uint8_t *)tx_line,
+                        (uint16_t)len,
+                        sent_len,
+                        1000) != WIFI_STATUS_OK)
+      {
+        Debug_Log(DEBUG_LEVEL_WARN, DEBUG_CLASS_WIFI, "UDP event resend failed");
+        break;
+      }
     }
   }
 }

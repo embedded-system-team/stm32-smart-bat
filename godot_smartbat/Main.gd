@@ -15,6 +15,7 @@ const BALL_START_Z := -20.0   # 投手丘(遠處)
 const HIT_Z := 0.0            # 好球帶(打者前方)
 const BALL_SPEED := 14.0      # units / 秒,球往 +z(朝鏡頭)飛
 const GOOD_WINDOW_MS := 120.0 # timing 誤差在此之內算 GOOD
+const LATE_SWING_GRACE_MS := 900.0 # MISS 後仍接受延遲到達的揮棒封包
 const GRAVITY := 18.0         # 球噴飛後的重力
 const READY_MIN := 1.0
 const READY_MAX := 2.5
@@ -33,6 +34,7 @@ var state_start_ms: float = 0.0
 var ready_delay_ms: float = 0.0
 var pitch_time_ms: float = 0.0
 var ideal_hit_ms: float = 0.0
+var miss_time_ms: float = 0.0
 var ball_vel := Vector3.ZERO
 
 
@@ -161,6 +163,7 @@ func _start_new_pitch() -> void:
 	state = State.READY_WAIT
 	state_start_ms = now_ms()
 	ready_delay_ms = randf_range(READY_MIN, READY_MAX) * 1000.0
+	miss_time_ms = 0.0
 	ball.visible = false
 	ball.position = Vector3(0, 2.0, BALL_START_Z)
 	ball_vel = Vector3.ZERO
@@ -180,12 +183,12 @@ func _classify(error_ms: float) -> String:
 
 
 func _on_swing(data: Dictionary) -> void:
-	if state != State.PITCHING:
-		return  # 不在打擊時段的揮棒忽略
-
 	var arrival := now_ms()
 	var peak_age: float = float(data.get("peak_age_ms", 0.0))
 	var peak_ms: float = arrival - peak_age          # 峰值在 Godot 時間軸的位置
+	if not _can_accept_swing(peak_ms, arrival):
+		return  # 不在打擊時段,或太晚才到的揮棒忽略
+
 	var error_ms: float = peak_ms - ideal_hit_ms
 	var result := _classify(error_ms)
 
@@ -197,6 +200,10 @@ func _on_swing(data: Dictionary) -> void:
 	# 用感測到的揮棒速度映射成球的出射速度(純視覺,比例可自己調)
 	var speed: float = float(data.get("speed", 0.0))
 	var launch: float = max(8.0, speed * 1.6 + 6.0)
+
+	if not ball.visible:
+		ball.visible = true
+		ball.position = Vector3(0, 2.0, HIT_Z + 1.5)
 
 	match result:
 		"GOOD":
@@ -219,11 +226,23 @@ func _on_swing(data: Dictionary) -> void:
 	state = State.HIT
 
 
+func _can_accept_swing(peak_ms: float, arrival_ms: float) -> bool:
+	if state == State.PITCHING:
+		return true
+
+	if state == State.RESULT and status_label.text == "MISS":
+		if arrival_ms - miss_time_ms <= LATE_SWING_GRACE_MS:
+			return peak_ms >= pitch_time_ms
+
+	return false
+
+
 func _result_miss() -> void:
 	status_label.text = "MISS"
 	detail_label.text = "沒偵測到揮棒"
 	hint_label.text = "SPACE 下一球"
 	ball.visible = false
+	miss_time_ms = now_ms()
 	state = State.RESULT
 
 
