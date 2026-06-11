@@ -182,6 +182,32 @@ func _classify(error_ms: float) -> String:
 		return "LATE"
 
 
+func _range_score(value: float, low: float, high: float) -> float:
+	if high <= low:
+		return 0.0
+	return clamp((value - low) / (high - low) * 100.0, 0.0, 100.0)
+
+
+func _swing_score(data: Dictionary, error_ms: float) -> int:
+	var timing_score: float = clamp(100.0 - abs(error_ms) / GOOD_WINDOW_MS * 40.0, 0.0, 100.0)
+	var peak_score: float = _range_score(float(data.get("peak_dps", 0)), 250.0, 900.0)
+	var dsp_n := int(data.get("dsp_n", 0))
+
+	if dsp_n <= 0:
+		return int(round((timing_score * 0.6) + (peak_score * 0.4)))
+
+	var rms_score: float = _range_score(float(data.get("rms_dps", 0)), 150.0, 650.0)
+	var energy: float = max(0.0, float(data.get("energy", 0)))
+	var energy_score: float = clamp(log(energy + 1.0) / log(200000.0 + 1.0) * 100.0, 0.0, 100.0)
+
+	return int(round(
+		(timing_score * 0.45)
+		+ (peak_score * 0.25)
+		+ (rms_score * 0.20)
+		+ (energy_score * 0.10)
+	))
+
+
 func _on_swing(data: Dictionary) -> void:
 	var arrival := now_ms()
 	var peak_age: float = float(data.get("peak_age_ms", 0.0))
@@ -214,13 +240,27 @@ func _on_swing(data: Dictionary) -> void:
 			ball_vel = Vector3(launch * 0.7, launch * 0.4, -launch * 0.5)
 
 	var es := ("+" if error_ms >= 0.0 else "") + ("%.0f" % error_ms)
+	var score := _swing_score(data, error_ms)
+	var peak_dps := int(data.get("peak_dps", 0))
+	var rms_dps := int(data.get("rms_dps", 0))
+	var energy := int(data.get("energy", 0))
+	var cmsis_peak := int(data.get("cmsis_peak_dps", 0))
+	var dsp_n := int(data.get("dsp_n", 0))
+	var drop := int(data.get("drop", 0))
+	var dsp_drop := int(data.get("dsp_drop", 0))
 	status_label.text = result
-	detail_label.text = "err %s ms | %d dps | %.2f m/s | %d ms | drop %d" % [
+	detail_label.text = "成績 %d | err %s ms | %.2f m/s | %d ms\npeak %d dps | cmsis %d | rms %d | energy %d | n %d | drop %d/%d" % [
+		score,
 		es,
-		int(data.get("peak_dps", 0)),
 		speed,
 		int(data.get("duration", 0)),
-		int(data.get("drop", 0)),
+		peak_dps,
+		cmsis_peak,
+		rms_dps,
+		energy,
+		dsp_n,
+		drop,
+		dsp_drop,
 	]
 	hint_label.text = "SPACE 下一球"
 	state = State.HIT

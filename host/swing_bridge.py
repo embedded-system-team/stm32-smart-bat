@@ -14,7 +14,12 @@ Godot payload:
     "peak_dps": <peak angular speed>,
     "speed": <estimated bat speed m/s>,
     "duration": <swing duration ms>,
-    "drop": <dropped IMU samples>
+    "rms_dps": <CMSIS-DSP RMS angular speed>,
+    "energy": <CMSIS-DSP swing energy index>,
+    "cmsis_peak_dps": <CMSIS-DSP peak angular speed>,
+    "dsp_n": <CMSIS-DSP sample count>,
+    "drop": <dropped IMU samples>,
+    "dsp_drop": <dropped CMSIS-DSP samples>
   }
 """
 
@@ -76,7 +81,12 @@ class SwingLineParser:
         peak_t = fields.get("peak_t", stm32_end_t)
         peak_dps = fields.get("peak_dps", 0)
         speed = fields.get("speed_x100", 0) / 100.0
+        rms_dps = fields.get("rms_dps", 0)
+        energy = fields.get("energy", 0)
+        cmsis_peak_dps = fields.get("cmsis_peak", 0)
+        dsp_n = fields.get("dsp_n", 0)
         drop = fields.get("drop", 0)
+        dsp_drop = fields.get("dsp_drop", 0)
 
         if stm32_end_t != 0 and stm32_end_t == self.last_end_t:
             return None
@@ -100,7 +110,12 @@ class SwingLineParser:
             "peak_dps": peak_dps,
             "speed": speed,
             "duration": duration,
+            "rms_dps": rms_dps,
+            "energy": energy,
+            "cmsis_peak_dps": cmsis_peak_dps,
+            "dsp_n": dsp_n,
             "drop": drop,
+            "dsp_drop": dsp_drop,
         }
 
 
