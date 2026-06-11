@@ -663,10 +663,20 @@ void StartUdpTask(void *argument)
   osDelay(25000);
 
   uint8_t server_ip[4] = SERVER_IP;
+
   uint16_t sent_len = 0;
+  uint16_t recv_len = 0;
+
+  uint8_t rx_buf[128];
+  uint8_t remote_ip[4] = {0};
+  uint16_t remote_port = 0;
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client start");
 
+  /*
+   * remote = PC_IP:SERVER_PORT
+   * local  = STM32_UDP_PORT
+   */
   if (WIFI_OpenClientConnection(0,
                                 WIFI_UDP_PROTOCOL,
                                 "smartbat_udp",
@@ -682,22 +692,94 @@ void StartUdpTask(void *argument)
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP open client ok");
 
-  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send test start");
+  const char *hello = "HELLO_FROM_STM32\n";
+
+  if (WIFI_SendData(0,
+                    (const uint8_t *)hello,
+                    strlen(hello),
+                    &sent_len,
+                    1000) == WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP HELLO sent");
+  } else {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP HELLO send failed");
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP receive loop start");
 
   for (;;) {
-    const char *msg = "HELLO_FROM_STM32\n";
+    memset(rx_buf, 0, sizeof(rx_buf));
+    memset(remote_ip, 0, sizeof(remote_ip));
+    recv_len = 0;
+    remote_port = 0;
 
-    if (WIFI_SendData(0,
-                      (const uint8_t *)msg,
-                      strlen(msg),
-                      &sent_len,
-                      1000) == WIFI_STATUS_OK) {
-      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send ok");
+    WIFI_Status_t st = WIFI_ReceiveDataFrom(0,
+                                            rx_buf,
+                                            sizeof(rx_buf) - 1,
+                                            &recv_len,
+                                            500,
+                                            remote_ip,
+                                            4,
+                                            &remote_port);
+
+    if (st == WIFI_STATUS_OK && recv_len > 0) {
+      rx_buf[recv_len] = '\0';
+
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP rx ok");
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, (char *)rx_buf);
+
+      if (strncmp((char *)rx_buf, "PING", 4) == 0) {
+        const char *pong = "PONG_FROM_STM32\n";
+
+        if (WIFI_SendData(0,
+                          (const uint8_t *)pong,
+                          strlen(pong),
+                          &sent_len,
+                          1000) == WIFI_STATUS_OK) {
+          Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PONG sent");
+        } else {
+          Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PONG send failed");
+        }
+      }
     } else {
-      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP send failed");
+      static uint32_t last_log = 0;
+      uint32_t now = HAL_GetTick();
+
+      if (now - last_log > 2000) {
+        Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP rx timeout/no data");
+        last_log = now;
+      }
     }
 
-    osDelay(1000);
+    osDelay(10);
+
+    if (strncmp((char *)rx_buf, "PING", 4) == 0) {
+      const char *pong = "PONG_FROM_STM32\n";
+
+      WIFI_SendData(0,
+                    (const uint8_t *)pong,
+                    strlen(pong),
+                    &sent_len,
+                    1000);
+
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PONG sent");
+    }
+    else if (strncmp((char *)rx_buf, "PITCH", 5) == 0) {
+      uint32_t pitch_t = HAL_GetTick();
+
+      char msg[96];
+
+      snprintf(msg, sizeof(msg),
+              "PITCH_SYNC t=%lu\n",
+              pitch_t);
+
+      WIFI_SendData(0,
+                    (const uint8_t *)msg,
+                    strlen(msg),
+                    &sent_len,
+                    1000);
+
+      Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "UDP PITCH_SYNC sent");
+    }
   }
 
   /* USER CODE END StartUdpTask */
