@@ -614,6 +614,32 @@ void StartWifiTask(void *argument)
 
   Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Init ok");
 
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect start");
+
+  if (WIFI_Connect(WIFI_SSID, WIFI_PASSWORD, WIFI_ECN_WPA2_PSK) != WIFI_STATUS_OK) {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect failed");
+
+    for (;;) {
+      osDelay(1000);
+    }
+  }
+
+  Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_Connect ok");
+
+  uint8_t ipaddr[4] = {0};
+
+  if (WIFI_GetIP_Address(ipaddr, 4) == WIFI_STATUS_OK) {
+    char msg[96];
+
+    snprintf(msg, sizeof(msg),
+            "IP = %u.%u.%u.%u",
+            ipaddr[0], ipaddr[1], ipaddr[2], ipaddr[3]);
+
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, msg);
+  } else {
+    Debug_Log(DEBUG_LEVEL_INFO, DEBUG_CLASS_WIFI, "WIFI_GetIP_Address failed");
+  }
+
   for (;;) {
     osDelay(1000);
   }
