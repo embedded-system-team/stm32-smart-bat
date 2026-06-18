@@ -18,6 +18,8 @@ The project goals are:
 
 ## System Architecture
 
+![System architecture exported from SmartBat_1.pdf](picture/system_architecture.png)
+
 ```text
 STM32 Smart Bat
   B-L475E-IOT01A1 + LSM6DSL IMU
@@ -69,6 +71,10 @@ This design means CMSIS-DSP does not participate in the `SWING_START` trigger de
 - Onboard ISM43362 Wi-Fi module
 - Vibration motor module controlled through GPIO
 - A PC or laptop on the same Wi-Fi network as the STM32 board
+
+![STM32 board mounted on the Smart Bat](picture/stm32.png)
+
+![Vibration motor placement on the Smart Bat](picture/motor.png)
 
 ### Software
 
@@ -196,6 +202,8 @@ This bridge keeps Godot-specific formatting out of the firmware and makes debugg
 ## Godot 3D Game
 
 The Godot side implements a simplified 3D batting scene:
+
+![Godot gameplay screenshot showing the batting interface](picture/godot.png)
 
 1. Wait for the next pitch.
 2. Display `PITCH!` and move the ball toward the hitting zone.
@@ -345,15 +353,6 @@ The main scene is:
 ```text
 godot_smartbat/main.tscn
 ```
-
-## Image and Video TODO
-
-The report can be submitted as text, but the following media would make the result clearer:
-
-- TODO: System architecture diagram, either exported from the slides or redrawn.
-- TODO: Physical photo of the Smart Bat, showing the STM32 board and vibration motor placement.
-- TODO: Godot gameplay screenshot, preferably showing `PITCH!`, HIT/MISS, score, or speed.
-- TODO: Demo video link, added to both this report and README.
 
 ## References
 
