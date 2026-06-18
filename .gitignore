@@ -49,4 +49,6 @@ godot_smartbat/.godot/
 firmware/Core/Inc/wifi_credentials.h
 
 # Slides
-SmartBat.pptx
+*.pptx
+*.pdf
+*.odp
