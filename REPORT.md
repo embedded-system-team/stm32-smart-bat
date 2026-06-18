@@ -240,17 +240,6 @@ The current system achieves the following:
 4. UDP + Godot real-time interaction: swing data is sent to Godot for 3D batting and score display.
 5. Sports-analysis-style feedback: each swing shows score, speed, energy, stability, and data quality.
 
-## Demo
-
-Demo video link: TODO: add the YouTube or cloud video link after upload.
-
-Recommended demo video content:
-
-- The STM32 board mounted on the bat, showing wireless swing operation.
-- The PC running `host/swing_bridge.py --source udp`, showing received `SWING_START` / `SWING_END` or JSON payloads.
-- The Godot game showing `PITCH!`, hit/miss result, speed, score, and visual effects.
-- If possible, a close-up of the vibration motor installation or trigger moment.
-
 ## Limitations and Challenges
 
 ### Wi-Fi Time Alignment
